@@ -1,0 +1,710 @@
+def driverVer() { return "2.4.0" }
+
+def type() { return "Kasa LAN Switch" }
+
+def file() { return type().replaceAll(" ", "-") }
+
+metadata {
+	definition (name: "Kasa LAN Switch",
+				namespace: "kasa",
+				author: "Dave Gutheinz",
+			   ) {
+		capability "Switch"
+		capability "Actuator"
+		capability "Configuration"
+		capability "Refresh"
+		command "ledOn"
+		command "ledOff"
+		attribute "led", "string"
+		command "setPollInterval", [[
+			name: "Poll Interval in seconds",
+			constraints: ["default", "1 second", "5 seconds", "10 seconds",
+						  "15 seconds", "30 seconds", "1 minute", "5 minutes",
+						  "10 minutes", "30 minutes"],
+			type: "ENUM"]]
+		attribute "connection", "string"
+		attribute "commsError", "string"
+	}
+//	6.7.2 Change B.  change logging names and titles to match other built-in drivers.
+	preferences {
+		input ("textEnable", "bool", 
+			   title: "Enable descriptionText logging",
+			   defaultValue: true)
+		input ("logEnable", "bool",
+			   title: "Enable debug logging",
+			   defaultValue: false)
+		input ("bind", "bool",
+			   title: "Kasa Cloud Binding",
+			   defalutValue: true)
+		input ("useCloud", "bool",
+		 	  title: "Use Kasa Cloud for device control",
+		 	  defaultValue: false)
+		input ("nameSync", "enum", title: "Synchronize Names",
+			   options: ["none": "Don't synchronize",
+						 "device" : "Kasa device name master", 
+						 "Hubitat" : "Hubitat label master"],
+			   defaultValue: "none")
+		input ("manualIp", "string",
+			   title: "Device IP Address",
+			   defaultValue: getDataValue("deviceIP"))
+		input ("manualPort", "string",
+			   title: "Device Port",
+			   defaultValue: getDataValue("devicePort"))
+		input ("rebootDev", "bool",
+			   title: "Reboot device <b>[Caution]</b>",
+			   defaultValue: false)
+	}
+}
+
+def installed() {
+		device.updateSetting("nameSync",[type:"enum", value:"device"])
+	def instStatus = installCommon()
+	logInfo("installed: ${instStatus}")
+}
+
+def updated() {
+	def updStatus = updateCommon()
+	logInfo("updated: ${updStatus}")
+	
+	if (getDataValue("model") == "HS300") {
+		updateDataValue("altComms", "false")
+		state.remove("response")
+	}
+	
+	refresh()
+}
+
+def setSysInfo(status) {
+	def switchStatus = status.relay_state
+	def ledStatus = status.led_off
+	def logData = [:]
+	if (getDataValue("plugNo") != null) {
+		def childStatus = status.children.find { it.id == getDataValue("plugNo") }
+		if (childStatus == null) {
+			childStatus = status.children.find { it.id == getDataValue("plugId") }
+		}
+		status = childStatus
+		switchStatus = status.state
+	}
+	
+	def onOff = "on"
+	if (switchStatus == 0) { onOff = "off" }
+	if (device.currentValue("switch") != onOff) {
+		sendEvent(name: "switch", value: onOff, type: "digital")
+		logData << [switch: onOff]
+	}
+	def ledOnOff = "on"
+	if (ledStatus == 1) { ledOnOff = "off" }
+	if (device.currentValue("led") != ledOnOff) {
+		sendEvent(name: "led", value: ledOnOff)
+		logData << [led: ledOnOff]
+	}
+	
+	if (logData != [:]) {
+		logInfo("setSysinfo: ${logData}")
+	}
+	if (nameSync == "device" || nameSync == "Hubitat") {
+		updateName(status)
+	}
+}
+
+def coordUpdate(cType, coordData) {
+	def msg = "coordinateUpdate: "
+	if (cType == "commsData") {
+		device.updateSetting("bind", [type:"bool", value: coordData.bind])
+		sendEvent(name: "connection", value: coordData.connection)
+		msg += "[commsData: ${coordData}]"
+	} else {
+		msg += "Not updated."
+	}
+	logInfo(msg)
+}
+
+// ~~~~~ start kasaCommon ~~~~~
+library (
+	name: "kasaCoegut",
+	author: "Dave Gutheinz",
+	description: "Kds",
+	category: "utilities",
+	documentationLink: ""
+)
+
+def installCommon() {
+	pauseExecution(3000)
+	def instStatus = [:]
+	sendEvent(name: "connection", value: "LAN")
+	device.updateSetting("useCloud", [type:"bool", value: false])
+	instStatus << [useCloud: false, connection: "LAN"]
+	sendEvent(name: "commsError", value: "false")
+	state.errorCount = 0
+	state.pollInterval = "5 seconds"
+	runIn(1, updated)
+	return instStatus
+}
+
+def updateCommon() {
+	def updStatus = [:]
+	if (rebootDev) {
+		updStatus << [rebootDev: rebootDevice()]
+		return updStatus
+	}
+	unschedule()
+	updStatus << [bind: bindUnbind()]
+	if (nameSync != "none") {
+		updStatus << [nameSync: syncName()]
+	}
+	if (logEnable) { runIn(1800, debugLogOff) }
+	updStatus << [textEnable: textEnable, logEnable: logEnable]
+	if (manualIp != getDataValue("deviceIP")) {
+		updateDataValue("deviceIP", manualIp)
+		updStatus << [ipUpdate: manualIp]
+	}
+	if (manualPort != getDataValue("devicePort")) {
+		updateDataValue("devicePort", manualPort)
+		updStatus << [portUpdate: manualPort]
+	}
+	state.errorCount = 0
+	sendEvent(name: "commsError", value: "false")
+	def pollInterval = state.pollInterval
+	if (pollInterval == null) { pollInterval = "30 minutes" }
+	updStatus << [pollInterval: setPollInterval(pollInterval)]
+	state.remove("UPDATE_AVAILABLE")
+	state.remove("releaseNotes")
+	removeDataValue("driverVersion")
+	runIn(5, listAttributes)
+	return updStatus
+}
+
+def configure() {
+	if (parent == null) {
+		logWarn("configure: No Parent Detected.  Configure function ABORTED.  Use Save Preferences instead.")
+	} else {
+		def confStatus = parent.updateConfigurations()
+		logInfo("configure: ${confStatus}")
+	}
+}
+
+def refresh() { poll() }
+
+def poll() { getSysinfo() }
+
+def setPollInterval(interval = state.pollInterval) {
+	if (interval == "default" || interval == "off" || interval == null) {
+		interval = "1 minute"
+	}
+	state.pollInterval = interval
+	def pollInterval = interval.substring(0,2).toInteger()
+	if (interval.contains("1 second")) {
+		def start = Math.round((pollInterval-1) * Math.random()).toInteger()
+		schedule("* * * * *", "poll")
+	} else if (interval.contains("sec")) {
+		def start = Math.round((pollInterval-1) * Math.random()).toInteger()
+		schedule("${start}/${pollInterval} * * * * ?", "poll")
+	} else {
+		def start = Math.round(59 * Math.random()).toInteger()
+		schedule("${start} */${pollInterval} * * * ?", "poll")
+	}
+	logDebug("setPollInterval: interval = ${interval}.")
+	return interval
+}
+
+def rebootDevice() {
+	device.updateSetting("rebootDev", [type:"bool", value: false])
+	reboot()
+	pauseExecution(10000)
+	return "REBOOTING DEVICE"
+}
+
+def bindUnbind() {
+	def message
+	if (bind == null ||  getDataValue("feature") == "lightStrip") {
+		message = "Getting current bind state"
+		getBind()
+	} else if (bind == true) {
+		if (!parent.kasaToken || parent.userName == null || parent.userPassword == null) {
+			message = "Username/pwd not set."
+			getBind()
+		} else {
+			message = "Binding device to the Kasa Cloud."
+			setBind(parent.userName, parent.userPassword)
+		}
+	} else if (bind == false) {
+		message = "Unbinding device from the Kasa Cloud."
+		setUnbind()
+	}
+	pauseExecution(5000)
+	return message
+}
+
+def setBindUnbind(cmdResp) {
+	def bindState = true
+	if (cmdResp.get_info) {
+		if (cmdResp.get_info.binded == 0) { bindState = false }
+		logInfo("setBindUnbind: Bind status set to ${bindState}")
+		setCommsType(bindState)
+	} else if (cmdResp.bind.err_code == 0){
+		getBind()
+	} else {
+		logWarn("setBindUnbind: Unhandled response: ${cmdResp}")
+	}
+}
+
+def setCommsType(bindState) {
+	def commsType = "LAN"
+	def cloudCtrl = false
+	def commsSettings = [bind: bindState, useCloud: cloudCtrl, commsType: commsType]
+	device.updateSetting("bind", [type:"bool", value: bindState])
+	device.updateSetting("useCloud", [type:"bool", value: cloudCtrl])
+	sendEvent(name: "connection", value: "${commsType}")
+	logInfo("setCommsType: ${commsSettings}")
+	if (getDataValue("plugNo") != null) {
+		def coordData = [:]
+		coordData << [bind: bindState]
+		coordData << [useCloud: cloudCtrl]
+		coordData << [connection: commsType]
+		parent.coordinate("commsData", coordData, getDataValue("deviceId"), getDataValue("plugNo"))
+	}
+	pauseExecution(1000)
+}
+
+def syncName() {
+	def message
+	if (nameSync == "Hubitat") {
+		message = "Hubitat Label Sync"
+		setDeviceAlias(device.getLabel())
+	} else if (nameSync == "device") {
+		message = "Device Alias Sync"
+	} else {
+		message = "Not Syncing"
+	}
+	device.updateSetting("nameSync",[type:"enum", value:"none"])
+	return message
+}
+
+def updateName(response) {
+	def name = device.getLabel()
+	if (response.alias) {
+		name = response.alias
+		device.setLabel(name)
+	} else if (response.err_code != 0) {
+		def msg = "updateName: Name Sync from Hubitat to Device returned an error."
+		msg+= "\n\rNote: <b>Some devices do not support syncing name from the hub.</b>\n\r"
+		logWarn(msg)
+		return
+	}
+	logInfo("updateName: Hubitat and Kasa device name synchronized to ${name}")
+}
+
+def getSysinfo() {
+	if (getDataValue("altComms") == "true") {
+		sendTcpCmd("""{"system":{"get_sysinfo":{}}}""")
+	} else {
+		sendCmd("""{"system":{"get_sysinfo":{}}}""")
+	}
+}
+
+def bindService() {
+	def service = "cnCloud"
+	def feature = getDataValue("feature")
+	if (feature.contains("Bulb") || feature == "lightStrip") {
+		service = "smartlife.iot.common.cloud"
+	}
+	return service
+}
+
+def getBind() {
+	if (getDataValue("deviceIP") == "CLOUD") {
+		logDebug("getBind: [status: notRun, reason: [deviceIP: CLOUD]]")
+	} else {
+		sendLanCmd("""{"${bindService()}":{"get_info":{}}}""")
+	}
+}
+
+def setBind(userName, password) {
+	if (getDataValue("deviceIP") == "CLOUD") {
+		logDebug("setBind: [status: notRun, reason: [deviceIP: CLOUD]]")
+	} else {
+		sendLanCmd("""{"${bindService()}":{"bind":{"username":"${userName}",""" +
+				   """"password":"${password}"}},""" +
+				   """"${bindService()}":{"get_info":{}}}""")
+	}
+}
+
+def setUnbind() {
+	if (getDataValue("deviceIP") == "CLOUD") {
+		logDebug("setUnbind: [status: notRun, reason: [deviceIP: CLOUD]]")
+	} else {
+		sendLanCmd("""{"${bindService()}":{"unbind":""},""" +
+				   """"${bindService()}":{"get_info":{}}}""")
+	}
+}
+
+def sysService() {
+	def service = "system"
+	def feature = getDataValue("feature")
+	if (feature.contains("Bulb") || feature == "lightStrip") {
+		service = "smartlife.iot.common.system"
+	}
+	return service
+}
+
+def reboot() {
+	sendCmd("""{"${sysService()}":{"reboot":{"delay":1}}}""")
+}
+
+def setDeviceAlias(newAlias) {
+	if (getDataValue("plugNo") != null) {
+		sendCmd("""{"context":{"child_ids":["${getDataValue("plugId")}"]},""" +
+				""""system":{"set_dev_alias":{"alias":"${device.getLabel()}"}}}""")
+	} else {
+		sendCmd("""{"${sysService()}":{"set_dev_alias":{"alias":"${device.getLabel()}"}}}""")
+	}
+}
+
+// ~~~~~ end kasaCommon ~~~~~
+
+// ~~~~~ start kasaCommunications ~~~~~
+library (
+	name: "kasaCommunications",
+	namespace: "kasa",
+	author: "Dave Gutheinz",
+	description: "Kasa Communications Methods",
+	category: "communications",
+	documentationLink: ""
+)
+
+import groovy.json.JsonSlurper
+import org.json.JSONObject
+
+def getPort() {
+	def port = 9999
+	if (getDataValue("devicePort")) {
+		port = getDataValue("devicePort")
+	}
+	return port
+}
+
+def sendCmd(command) {
+	state.lastCommand = command
+	def connection = device.currentValue("connection")
+	if (connection == "LAN") {
+		sendLanCmd(command)
+	} else {
+		logWarn("sendCmd: attribute connection is not set.")
+	}
+}
+
+///////////////////////////////////
+def sendLanCmd(command) {
+	logDebug("sendLanCmd: [ip: ${getDataValue("deviceIP")}, cmd: ${command}]")
+	def myHubAction = new hubitat.device.HubAction(
+		outputXOR(command),
+		hubitat.device.Protocol.LAN,
+		[type: hubitat.device.HubAction.Type.LAN_TYPE_UDPCLIENT,
+		 destinationAddress: "${getDataValue("deviceIP")}:${getPort()}",
+		 encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
+		 parseWarning: true,
+		 timeout: 9,
+		 ignoreResponse: false,
+		 callback: "parseUdp"])
+	try {
+		sendHubCommand(myHubAction)
+	} catch (e) {
+		handleCommsError()
+		logWarn("sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error.")
+	}
+}
+
+def parseUdp(message) {
+	def resp = parseLanMessage(message)
+	if (resp.type == "LAN_TYPE_UDPCLIENT") {
+		def clearResp = inputXOR(resp.payload)
+		if (clearResp.length() > 1023) {
+			if (clearResp.contains("preferred")) {
+				clearResp = clearResp.substring(0,clearResp.indexOf("preferred")-2) + "}}}"
+			} else if (clearResp.contains("child_num")) {
+				clearResp = clearResp.substring(0,clearResp.indexOf("child_num") -2) + "}}}"
+			} else {
+				logWarn("parseUdp: [status: converting to altComms, error: udp msg can not be parsed]")
+				logDebug("parseUdp: [messageData: ${clearResp}]")
+				updateDataValue("altComms", "true")
+				sendTcpCmd(state.lastCommand)
+				return
+			}
+		}
+		def cmdResp = new JsonSlurper().parseText(clearResp)
+		logDebug("parseUdp: ${cmdResp}")
+		distResp(cmdResp)
+		setCommsError(false)
+	} else {
+		logDebug("parseUdp: [error: error, reason: not LAN_TYPE_UDPCLIENT, respType: ${resp.type}]")
+		handleCommsError()
+	}
+}
+
+def sendTcpCmd(command) {
+	logDebug("sendTcpCmd: ${command}")
+	try {
+		interfaces.rawSocket.connect("${getDataValue("deviceIP")}",
+									 getPort().toInteger(), byteInterface: true)
+	} catch (error) {
+		logDebug("SendTcpCmd: [connectFailed: [ip: ${getDataValue("deviceIP")}, Error = ${error}]]")
+	}
+	state.response = ""
+	interfaces.rawSocket.sendMessage(outputXorTcp(command))
+}
+
+def close() {
+	interfaces.rawSocket.close()
+}
+
+def socketStatus(message) {
+	if (message != "receive error: Stream closed.") {
+		logDebug("socketStatus: Socket Established")
+	} else {
+		logWarn("socketStatus = ${message}")
+	}
+}
+
+def parse(message) {
+	if (message != null || message != "") {
+		def response = state.response.concat(message)
+		state.response = response
+		extractTcpResp(response)
+	}
+}
+
+def extractTcpResp(response) {
+	def cmdResp
+	def clearResp = inputXorTcp(response)
+	if (clearResp.endsWith("}}}")) {
+		interfaces.rawSocket.close()
+		try {
+			cmdResp = parseJson(clearResp)
+			distResp(cmdResp)
+		} catch (e) {
+			logWarn("extractTcpResp: [length: ${clearResp.length()}, clearResp: ${clearResp}, comms error: ${e}]")
+		}
+	} else if (clearResp.length() > 2000) {
+		interfaces.rawSocket.close()
+	}
+}
+
+
+
+
+////////////////////////////////////////
+def handleCommsError() {
+	Map logData = [:]
+	if (state.lastCommand != "") {
+		def count = state.errorCount + 1
+		state.errorCount = count
+		def retry = true
+		def cmdData = new JSONObject(state.lastCmd)
+		def cmdBody = parseJson(cmdData.cmdBody.toString())
+		logData << [count: count, command: state.lastCommand]
+		switch (count) {
+			case 1:
+			case 2:
+				if (getDataValue("altComms") == "true") {
+					sendTcpCmd(state.lastCommand)
+				} else {
+					sendCmd(state.lastCommand)
+				}
+				logDebug("handleCommsError: ${logData}")
+				break
+			case 3:
+				logData << [setCommsError: setCommsError(true), status: "retriesDisabled"]
+				logError("handleCommsError: ${logData}")
+				break
+			default:
+				break
+		}
+	}
+}
+/////////////////////////////////////////////
+def setCommsError(status) {
+	if (!status) {
+		sendEvent(name: "commsError", value: "false")
+		state.errorCount = 0
+	} else {
+		sendEvent(name: "commsError", value: "false")
+		return "commsErrorSet"
+	}
+}
+
+private outputXOR(command) {
+	def str = ""
+	def encrCmd = ""
+ 	def key = 0xAB
+	for (int i = 0; i < command.length(); i++) {
+		str = (command.charAt(i) as byte) ^ key
+		key = str
+		encrCmd += Integer.toHexString(str)
+	}
+   	return encrCmd
+}
+
+private inputXOR(encrResponse) {
+	String[] strBytes = encrResponse.split("(?<=\\G.{2})")
+	def cmdResponse = ""
+	def key = 0xAB
+	def nextKey
+	byte[] XORtemp
+	for(int i = 0; i < strBytes.length; i++) {
+		nextKey = (byte)Integer.parseInt(strBytes[i], 16)	// could be negative
+		XORtemp = nextKey ^ key
+		key = nextKey
+		cmdResponse += new String(XORtemp)
+	}
+	return cmdResponse
+}
+
+private outputXorTcp(command) {
+	def str = ""
+	def encrCmd = "000000" + Integer.toHexString(command.length())
+ 	def key = 0xAB
+	for (int i = 0; i < command.length(); i++) {
+		str = (command.charAt(i) as byte) ^ key
+		key = str
+		encrCmd += Integer.toHexString(str)
+	}
+   	return encrCmd
+}
+
+private inputXorTcp(resp) {
+	String[] strBytes = resp.substring(8).split("(?<=\\G.{2})")
+	def cmdResponse = ""
+	def key = 0xAB
+	def nextKey
+	byte[] XORtemp
+	for(int i = 0; i < strBytes.length; i++) {
+		nextKey = (byte)Integer.parseInt(strBytes[i], 16)	// could be negative
+		XORtemp = nextKey ^ key
+		key = nextKey
+		cmdResponse += new String(XORtemp)
+	}
+	return cmdResponse
+}
+// ~~~~~ end kasaCommunications ~~~~~
+
+// ~~~~~ start commonLogging ~~~~~
+library (
+	name: "commonLogging",
+	namespace: "kasa",
+	author: "Dave Gutheinz",
+	description: "Common Logging Methods",
+	category: "utilities",
+	documentationLink: ""
+)
+
+//	Logging during development
+def listAttributes(trace = false) {
+	def attrs = device.getSupportedAttributes()
+	def attrList = [:]
+	attrs.each {
+		def val = device.currentValue("${it}")
+		attrList << ["${it}": val]
+	}
+	if (trace == true) {
+		logInfo("Attributes: ${attrList}")
+	} else {
+		logDebug("Attributes: ${attrList}")
+	}
+}
+
+//	6.7.2 Change B.  Remove driverVer()
+def logTrace(msg){
+	log.trace "${device.displayName}-${driverVer()}: ${msg}"
+}
+
+def logInfo(msg) {
+	if (textEnable || infoLog) {
+		log.info "${device.displayName}-${driverVer()}: ${msg}"
+	}
+}
+
+def debugLogOff() {
+	if (logEnable) {
+		device.updateSetting("logEnable", [type:"bool", value: false])
+	}
+	logInfo("debugLogOff")
+}
+
+def logDebug(msg) {
+	if (logEnable || debugLog) {
+		log.debug "${device.displayName}-${driverVer()}: ${msg}"
+	}
+}
+
+def logWarn(msg) { log.warn "${device.displayName}-${driverVer()}: ${msg}" }
+
+// ~~~~~ end commonLogging ~~~~~
+
+// ~~~~~ start kasaPlugs ~~~~~
+library (
+	name: "kasaPlugs",
+	namespace: "kasa",
+	author: "Dave Gutheinz",
+	description: "Kasa Plug and Switches Common Methods",
+	category: "utilities",
+	documentationLink: ""
+)
+
+def on() { setRelayState(1) }
+
+def off() { setRelayState(0) }
+
+def ledOn() { setLedOff(0) }
+
+def ledOff() { setLedOff(1) }
+
+def distResp(response) {
+	if (response.system) {
+		if (response.system.get_sysinfo) {
+			setSysInfo(response.system.get_sysinfo)
+		} else if (response.system.set_relay_state ||
+				   response.system.set_led_off) {
+			if (getDataValue("model") == "HS210") {
+				runIn(2, getSysinfo)
+			} else {
+				getSysinfo()
+			}
+		} else if (response.system.reboot) {
+			logWarn("distResp: Rebooting device.")
+		} else if (response.system.set_dev_alias) {
+			updateName(response.system.set_dev_alias)
+		} else {
+			logDebug("distResp: Unhandled response = ${response}")
+		}
+	} else if (response["smartlife.iot.dimmer"]) {
+		if (response["smartlife.iot.dimmer"].get_dimmer_parameters) {
+			setDimmerConfig(response["smartlife.iot.dimmer"])
+		} else {
+			logDebug("distResp: Unhandled response: ${response["smartlife.iot.dimmer"]}")
+		}
+	} else if (response.emeter) {
+		distEmeter(response.emeter)
+	} else if (response.cnCloud) {
+		setBindUnbind(response.cnCloud)
+	} else {
+		logDebug("distResp: Unhandled response = ${response}")
+	}
+}
+
+def setRelayState(onOff) {
+	logDebug("setRelayState: [switch: ${onOff}]")
+	if (getDataValue("plugNo") == null) {
+		sendCmd("""{"system":{"set_relay_state":{"state":${onOff}}}}""")
+	} else {
+		sendCmd("""{"context":{"child_ids":["${getDataValue("plugId")}"]},""" +
+				""""system":{"set_relay_state":{"state":${onOff}}}}""")
+	}
+}
+
+def setLedOff(onOff) {
+	logDebug("setLedOff: [ledOff: ${onOff}]")
+		sendCmd("""{"system":{"set_led_off":{"off":${onOff}}}}""")
+}
+
+// ~~~~~ end kasaPlugs ~~~~~
