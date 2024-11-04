@@ -68,7 +68,6 @@ def updated() {
 	logInfo("updated: ${updStatus}")
 	
 	if (getDataValue("model") == "HS300") {
-		updateDataValue("altComms", "false")
 		state.remove("response")
 	}
 	
@@ -476,11 +475,7 @@ def updateName(response) {
 }
 
 def getSysinfo() {
-	if (getDataValue("altComms") == "true") {
-		sendTcpCmd("""{"system":{"get_sysinfo":{}}}""")
-	} else {
-		sendCmd("""{"system":{"get_sysinfo":{}}}""")
-	}
+	sendCmd("""{"system":{"get_sysinfo":{}}}""")
 }
 
 def bindService() {
@@ -564,6 +559,10 @@ def getPort() {
 	return port
 }
 
+def getDeviceAddr() {
+	return getDataValue("deviceIP")
+}
+
 def sendCmd(command) {
 	state.lastCommand = command
 	def connection = device.currentValue("connection")
@@ -576,12 +575,12 @@ def sendCmd(command) {
 
 ///////////////////////////////////
 def sendLanCmd(command) {
-	logDebug("sendLanCmd: [ip: ${getDataValue("deviceIP")}, cmd: ${command}]")
+	logDebug("sendLanCmd: [IP: ${getDeviceAddr()}, cmd: ${command}]")
 	def myHubAction = new hubitat.device.HubAction(
 		outputXOR(command),
 		hubitat.device.Protocol.LAN,
 		[type: hubitat.device.HubAction.Type.LAN_TYPE_UDPCLIENT,
-		 destinationAddress: "${getDataValue("deviceIP")}:${getPort()}",
+		 destinationAddress: "${getDeviceAddr()}:${getPort()}",
 		 encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
 		 parseWarning: true,
 		 timeout: 9,
@@ -605,10 +604,8 @@ def parseUdp(message) {
 			} else if (clearResp.contains("child_num")) {
 				clearResp = clearResp.substring(0,clearResp.indexOf("child_num") -2) + "}}}"
 			} else {
-				logWarn("parseUdp: [status: converting to altComms, error: udp msg can not be parsed]")
+				logWarn("parseUdp: udp msg can not be parsed]")
 				logDebug("parseUdp: [messageData: ${clearResp}]")
-				updateDataValue("altComms", "true")
-				sendTcpCmd(state.lastCommand)
 				return
 			}
 		}
@@ -620,18 +617,6 @@ def parseUdp(message) {
 		logDebug("parseUdp: [error: error, reason: not LAN_TYPE_UDPCLIENT, respType: ${resp.type}]")
 		handleCommsError()
 	}
-}
-
-def sendTcpCmd(command) {
-	logDebug("sendTcpCmd: ${command}")
-	try {
-		interfaces.rawSocket.connect("${getDataValue("deviceIP")}",
-									 getPort().toInteger(), byteInterface: true)
-	} catch (error) {
-		logDebug("SendTcpCmd: [connectFailed: [ip: ${getDataValue("deviceIP")}, Error = ${error}]]")
-	}
-	state.response = ""
-	interfaces.rawSocket.sendMessage(outputXorTcp(command))
 }
 
 def close() {
@@ -686,11 +671,7 @@ def handleCommsError() {
 		switch (count) {
 			case 1:
 			case 2:
-				if (getDataValue("altComms") == "true") {
-					sendTcpCmd(state.lastCommand)
-				} else {
-					sendCmd(state.lastCommand)
-				}
+				sendCmd(state.lastCommand)
 				logDebug("handleCommsError: ${logData}")
 				break
 			case 3:
