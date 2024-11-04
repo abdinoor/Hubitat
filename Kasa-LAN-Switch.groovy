@@ -101,7 +101,7 @@ def coordUpdate(cType, coordData) {
 	def msg = "coordinateUpdate: "
 	if (cType == "commsData") {
 		device.updateSetting("bind", [type:"bool", value: coordData.bind])
-		sendEvent(name: "connection", value: coordData.connection)
+		sendEvent(name: "connection", value: "LAN")
 		msg += "[commsData: ${coordData}]"
 	} else {
 		msg += "Not updated."
