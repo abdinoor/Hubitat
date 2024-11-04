@@ -13,9 +13,6 @@ metadata {
 		capability "Actuator"
 		capability "Configuration"
 		capability "Refresh"
-		command "ledOn"
-		command "ledOff"
-		attribute "led", "string"
 		command "setPollInterval", [[
 			name: "Poll Interval in seconds",
 			constraints: ["default", "1 second", "5 seconds", "10 seconds",
@@ -27,7 +24,7 @@ metadata {
 	}
 //	6.7.2 Change B.  change logging names and titles to match other built-in drivers.
 	preferences {
-		input ("textEnable", "bool", 
+		input ("textEnable", "bool",
 			   title: "Enable descriptionText logging",
 			   defaultValue: true)
 		input ("logEnable", "bool",
@@ -41,7 +38,7 @@ metadata {
 		 	  defaultValue: false)
 		input ("nameSync", "enum", title: "Synchronize Names",
 			   options: ["none": "Don't synchronize",
-						 "device" : "Kasa device name master", 
+						 "device" : "Kasa device name master",
 						 "Hubitat" : "Hubitat label master"],
 			   defaultValue: "none")
 		input ("manualIp", "string",
@@ -65,18 +62,16 @@ def installed() {
 def updated() {
 	def updStatus = updateCommon()
 	logInfo("updated: ${updStatus}")
-	
+
 	if (getDataValue("model") == "HS300") {
-		updateDataValue("altComms", "false")
 		state.remove("response")
 	}
-	
+
 	refresh()
 }
 
 def setSysInfo(status) {
 	def switchStatus = status.relay_state
-	def ledStatus = status.led_off
 	def logData = [:]
 	if (getDataValue("plugNo") != null) {
 		def childStatus = status.children.find { it.id == getDataValue("plugNo") }
@@ -86,20 +81,14 @@ def setSysInfo(status) {
 		status = childStatus
 		switchStatus = status.state
 	}
-	
+
 	def onOff = "on"
 	if (switchStatus == 0) { onOff = "off" }
 	if (device.currentValue("switch") != onOff) {
 		sendEvent(name: "switch", value: onOff, type: "digital")
 		logData << [switch: onOff]
 	}
-	def ledOnOff = "on"
-	if (ledStatus == 1) { ledOnOff = "off" }
-	if (device.currentValue("led") != ledOnOff) {
-		sendEvent(name: "led", value: ledOnOff)
-		logData << [led: ledOnOff]
-	}
-	
+
 	if (logData != [:]) {
 		logInfo("setSysinfo: ${logData}")
 	}
@@ -122,7 +111,8 @@ def coordUpdate(cType, coordData) {
 
 // ~~~~~ start kasaCommon ~~~~~
 library (
-	name: "kasaCoegut",
+	name: "kasaCommon",
+	namespace: "kasa",
 	author: "Dave Gutheinz",
 	description: "Kds",
 	category: "utilities",
@@ -137,7 +127,7 @@ def installCommon() {
 	instStatus << [useCloud: false, connection: "LAN"]
 	sendEvent(name: "commsError", value: "false")
 	state.errorCount = 0
-	state.pollInterval = "5 seconds"
+	state.pollInterval = "1 minute"
 	runIn(1, updated)
 	return instStatus
 }
@@ -166,7 +156,7 @@ def updateCommon() {
 	state.errorCount = 0
 	sendEvent(name: "commsError", value: "false")
 	def pollInterval = state.pollInterval
-	if (pollInterval == null) { pollInterval = "30 minutes" }
+	if (pollInterval == null) { pollInterval = "1 minute" }
 	updStatus << [pollInterval: setPollInterval(pollInterval)]
 	state.remove("UPDATE_AVAILABLE")
 	state.remove("releaseNotes")
@@ -184,27 +174,38 @@ def configure() {
 	}
 }
 
-def refresh() { poll() }
+def refresh() {
+	getSysinfo()
+}
 
-def poll() { getSysinfo() }
+def poll() {
+	unschedule('poll')
+	getSysinfo()
+	def pollInterval = getPollInterval(state.pollInterval)
+	runIn(pollInterval, poll)
+}
+
+def getPollInterval(descInterval) {
+	def interval = descInterval.substring(0,2).toInteger()
+	if (descInterval.contains("1 second")) {
+		return 1
+	}
+
+	if (descInterval.contains("sec")) {
+		return interval
+	}
+
+	return interval * 60
+}
 
 def setPollInterval(interval = state.pollInterval) {
 	if (interval == "default" || interval == "off" || interval == null) {
 		interval = "1 minute"
 	}
 	state.pollInterval = interval
-	def pollInterval = interval.substring(0,2).toInteger()
-	if (interval.contains("1 second")) {
-		def start = Math.round((pollInterval-1) * Math.random()).toInteger()
-		schedule("* * * * *", "poll")
-	} else if (interval.contains("sec")) {
-		def start = Math.round((pollInterval-1) * Math.random()).toInteger()
-		schedule("${start}/${pollInterval} * * * * ?", "poll")
-	} else {
-		def start = Math.round(59 * Math.random()).toInteger()
-		schedule("${start} */${pollInterval} * * * ?", "poll")
-	}
-	logDebug("setPollInterval: interval = ${interval}.")
+	def pollInterval = getPollInterval(interval)
+	runIn(pollInterval, poll)
+	logDebug("setPollInterval: interval = ${pollInterval} sec.")
 	return interval
 }
 
@@ -296,11 +297,7 @@ def updateName(response) {
 }
 
 def getSysinfo() {
-	if (getDataValue("altComms") == "true") {
-		sendTcpCmd("""{"system":{"get_sysinfo":{}}}""")
-	} else {
-		sendCmd("""{"system":{"get_sysinfo":{}}}""")
-	}
+	sendCmd("""{"system":{"get_sysinfo":{}}}""")
 }
 
 def bindService() {
@@ -384,6 +381,10 @@ def getPort() {
 	return port
 }
 
+def getDeviceAddr() {
+	return getDataValue("deviceIP")
+}
+
 def sendCmd(command) {
 	state.lastCommand = command
 	def connection = device.currentValue("connection")
@@ -396,12 +397,12 @@ def sendCmd(command) {
 
 ///////////////////////////////////
 def sendLanCmd(command) {
-	logDebug("sendLanCmd: [ip: ${getDataValue("deviceIP")}, cmd: ${command}]")
+	logDebug("sendLanCmd: [IP: ${getDeviceAddr()}, cmd: ${command}]")
 	def myHubAction = new hubitat.device.HubAction(
 		outputXOR(command),
 		hubitat.device.Protocol.LAN,
 		[type: hubitat.device.HubAction.Type.LAN_TYPE_UDPCLIENT,
-		 destinationAddress: "${getDataValue("deviceIP")}:${getPort()}",
+		 destinationAddress: "${getDeviceAddr()}:${getPort()}",
 		 encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
 		 parseWarning: true,
 		 timeout: 9,
@@ -425,10 +426,8 @@ def parseUdp(message) {
 			} else if (clearResp.contains("child_num")) {
 				clearResp = clearResp.substring(0,clearResp.indexOf("child_num") -2) + "}}}"
 			} else {
-				logWarn("parseUdp: [status: converting to altComms, error: udp msg can not be parsed]")
+				logWarn("parseUdp: udp msg can not be parsed]")
 				logDebug("parseUdp: [messageData: ${clearResp}]")
-				updateDataValue("altComms", "true")
-				sendTcpCmd(state.lastCommand)
 				return
 			}
 		}
@@ -440,18 +439,6 @@ def parseUdp(message) {
 		logDebug("parseUdp: [error: error, reason: not LAN_TYPE_UDPCLIENT, respType: ${resp.type}]")
 		handleCommsError()
 	}
-}
-
-def sendTcpCmd(command) {
-	logDebug("sendTcpCmd: ${command}")
-	try {
-		interfaces.rawSocket.connect("${getDataValue("deviceIP")}",
-									 getPort().toInteger(), byteInterface: true)
-	} catch (error) {
-		logDebug("SendTcpCmd: [connectFailed: [ip: ${getDataValue("deviceIP")}, Error = ${error}]]")
-	}
-	state.response = ""
-	interfaces.rawSocket.sendMessage(outputXorTcp(command))
 }
 
 def close() {
@@ -506,11 +493,7 @@ def handleCommsError() {
 		switch (count) {
 			case 1:
 			case 2:
-				if (getDataValue("altComms") == "true") {
-					sendTcpCmd(state.lastCommand)
-				} else {
-					sendCmd(state.lastCommand)
-				}
+				sendCmd(state.lastCommand)
 				logDebug("handleCommsError: ${logData}")
 				break
 			case 3:
@@ -655,16 +638,11 @@ def on() { setRelayState(1) }
 
 def off() { setRelayState(0) }
 
-def ledOn() { setLedOff(0) }
-
-def ledOff() { setLedOff(1) }
-
 def distResp(response) {
 	if (response.system) {
 		if (response.system.get_sysinfo) {
 			setSysInfo(response.system.get_sysinfo)
-		} else if (response.system.set_relay_state ||
-				   response.system.set_led_off) {
+		} else if (response.system.set_relay_state) {
 			if (getDataValue("model") == "HS210") {
 				runIn(2, getSysinfo)
 			} else {
@@ -700,11 +678,6 @@ def setRelayState(onOff) {
 		sendCmd("""{"context":{"child_ids":["${getDataValue("plugId")}"]},""" +
 				""""system":{"set_relay_state":{"state":${onOff}}}}""")
 	}
-}
-
-def setLedOff(onOff) {
-	logDebug("setLedOff: [ledOff: ${onOff}]")
-		sendCmd("""{"system":{"set_led_off":{"off":${onOff}}}}""")
 }
 
 // ~~~~~ end kasaPlugs ~~~~~
