@@ -57,7 +57,7 @@ metadata {
 }
 
 def installed() {
-		device.updateSetting("nameSync",[type:"enum", value:"device"])
+	device.updateSetting("nameSync",[type:"enum", value:"device"])
 	def instStatus = installCommon()
 	getDimmerConfiguration()
 	logInfo("installed: ${instStatus}")
@@ -275,18 +275,6 @@ def setSysInfo(status) {
 	}
 }
 
-def coordUpdate(cType, coordData) {
-	def msg = "coordinateUpdate: "
-	if (cType == "commsData") {
-		device.updateSetting("bind", [type:"bool", value: coordData.bind])
-		sendEvent(name: "connection", value: "LAN")
-		msg += "[commsData: ${coordData}]"
-	} else {
-		msg += "Not updated."
-	}
-	logInfo(msg)
-}
-
 // ~~~~~ start kasaCommon ~~~~~
 library (
 	name: "kasaCommon",
@@ -321,7 +309,10 @@ def updateCommon() {
 	if (nameSync != "none") {
 		updStatus << [nameSync: syncName()]
 	}
-	if (logEnable) { runIn(1800, debugLogOff) }
+	if (logEnable) {
+		// turn off debug logging in 30 minutes
+		runIn(1800, debugLogOff)
+	}
 	updStatus << [textEnable: textEnable, logEnable: logEnable]
 	if (manualIp != getDataValue("deviceIP")) {
 		updateDataValue("deviceIP", manualIp)
@@ -429,18 +420,16 @@ def setBindUnbind(cmdResp) {
 }
 
 def setCommsType(bindState) {
-	def commsType = "LAN"
-	def cloudCtrl = false
-	def commsSettings = [bind: bindState, useCloud: cloudCtrl, commsType: commsType]
+	def commsSettings = [bind: bindState, useCloud: false, commsType: "LAN"]
 	device.updateSetting("bind", [type:"bool", value: bindState])
-	device.updateSetting("useCloud", [type:"bool", value: cloudCtrl])
-	sendEvent(name: "connection", value: "${commsType}")
+	device.updateSetting("useCloud", [type:"bool", value: false])
+	sendEvent(name: "connection", value: "LAN")
 	logInfo("setCommsType: ${commsSettings}")
 	if (getDataValue("plugNo") != null) {
 		def coordData = [:]
 		coordData << [bind: bindState]
-		coordData << [useCloud: cloudCtrl]
-		coordData << [connection: commsType]
+		coordData << [useCloud: false]
+		coordData << [connection: "LAN"]
 		parent.coordinate("commsData", coordData, getDataValue("deviceId"), getDataValue("plugNo"))
 	}
 	pauseExecution(1000)
@@ -565,12 +554,7 @@ def getDeviceAddr() {
 
 def sendCmd(command) {
 	state.lastCommand = command
-	def connection = device.currentValue("connection")
-	if (connection == "LAN") {
-		sendLanCmd(command)
-	} else {
-		logWarn("sendCmd: attribute connection is not set.")
-	}
+	sendLanCmd(command)
 }
 
 ///////////////////////////////////
@@ -759,7 +743,6 @@ library (
 	documentationLink: ""
 )
 
-//	Logging during development
 def listAttributes(trace = false) {
 	def attrs = device.getSupportedAttributes()
 	def attrList = [:]
@@ -768,13 +751,12 @@ def listAttributes(trace = false) {
 		attrList << ["${it}": val]
 	}
 	if (trace == true) {
-		logInfo("Attributes: ${attrList}")
+		logTrace("Attributes: ${attrList}")
 	} else {
 		logDebug("Attributes: ${attrList}")
 	}
 }
 
-//	6.7.2 Change B.  Remove driverVer()
 def logTrace(msg){
 	log.trace "${device.displayName}-${driverVer()}: ${msg}"
 }
