@@ -322,6 +322,7 @@ def updateCommon() {
 		updateDataValue("devicePort", manualPort)
 		updStatus << [portUpdate: manualPort]
 	}
+	state.model = getDataValue("model")
 	state.errorCount = 0
 	sendEvent(name: "commsError", value: "false")
 	def pollInterval = state.pollInterval
@@ -522,6 +523,12 @@ def setDeviceAlias(newAlias) {
 				""""system":{"set_dev_alias":{"alias":"${device.getLabel()}"}}}""")
 	} else {
 		sendCmd("""{"${sysService()}":{"set_dev_alias":{"alias":"${device.getLabel()}"}}}""")
+	}
+}
+
+def updateAttr(attr, value) {
+	if (device.currentValue(attr) != value) {
+		sendEvent(name: attr, value: value)
 	}
 }
 
