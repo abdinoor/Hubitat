@@ -421,6 +421,7 @@ def setCommsType(bindState) {
 	def commsSettings = [bind: bindState, commsType: "LAN"]
 	device.updateSetting("bind", [type:"bool", value: bindState])
 	sendEvent(name: "connection", value: "LAN")
+	sendEvent(name: "deviceIP", value: getDeviceAddr())
 	logInfo("setCommsType: ${commsSettings}")
 	if (getDataValue("plugNo") != null) {
 		def coordData = [:]
@@ -480,7 +481,6 @@ def setBind(userName, password) {
 				   """"password":"${password}"}},""" +
 				   """"cnCloud":{"get_info":{}}}""")
 	}
-	sendEvent(name: "deviceIP", value: deviceAddr)
 }
 
 def setUnbind() {
