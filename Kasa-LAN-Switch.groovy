@@ -21,7 +21,8 @@ metadata {
 			type: "ENUM"]]
 		attribute "connection", "string"
 		attribute "commsError", "string"
-	}
+		attribute "deviceIP", "string"
+}
 //	6.7.2 Change B.  change logging names and titles to match other built-in drivers.
 	preferences {
 		input ("textEnable", "bool",
@@ -33,9 +34,6 @@ metadata {
 		input ("bind", "bool",
 			   title: "Kasa Cloud Binding",
 			   defalutValue: true)
-		input ("useCloud", "bool",
-		 	  title: "Use Kasa Cloud for device control",
-		 	  defaultValue: false)
 		input ("nameSync", "enum", title: "Synchronize Names",
 			   options: ["none": "Don't synchronize",
 						 "device" : "Kasa device name master",
@@ -138,6 +136,7 @@ def updateCommon() {
 	updStatus << [textEnable: textEnable, logEnable: logEnable]
 	if (manualIp != getDataValue("deviceIP")) {
 		updateDataValue("deviceIP", manualIp)
+		sendEvent(name: "deviceIP", value: manualIp)
 		updStatus << [ipUpdate: manualIp]
 	}
 	if (manualPort != getDataValue("devicePort")) {
@@ -243,15 +242,14 @@ def setBindUnbind(cmdResp) {
 }
 
 def setCommsType(bindState) {
-	def commsSettings = [bind: bindState, useCloud: false, commsType: "LAN"]
+	def commsSettings = [bind: bindState, commsType: "LAN"]
 	device.updateSetting("bind", [type:"bool", value: bindState])
-	device.updateSetting("useCloud", [type:"bool", value: false])
 	sendEvent(name: "connection", value: "LAN")
+	sendEvent(name: "deviceIP", value: getDeviceAddr())
 	logInfo("setCommsType: ${commsSettings}")
 	if (getDataValue("plugNo") != null) {
 		def coordData = [:]
 		coordData << [bind: bindState]
-		coordData << [useCloud: false]
 		coordData << [connection: "LAN"]
 		parent.coordinate("commsData", coordData, getDataValue("deviceId"), getDataValue("plugNo"))
 	}
@@ -290,39 +288,30 @@ def getSysinfo() {
 	sendCmd("""{"system":{"get_sysinfo":{}}}""")
 }
 
-def bindService() {
-	def service = "cnCloud"
-	def feature = getDataValue("feature")
-	if (feature.contains("Bulb") || feature == "lightStrip") {
-		service = "smartlife.iot.common.cloud"
-	}
-	return service
-}
-
 def getBind() {
 	if (getDataValue("deviceIP") == "CLOUD") {
-		logDebug("getBind: [status: notRun, reason: [deviceIP: CLOUD]]")
+		logWarn("getBind: [status: notRun, reason: [deviceIP: CLOUD]]")
 	} else {
-		sendLanCmd("""{"${bindService()}":{"get_info":{}}}""")
+		sendLanCmd("""{"cnCloud":{"get_info":{}}}""")
 	}
 }
 
 def setBind(userName, password) {
 	if (getDataValue("deviceIP") == "CLOUD") {
-		logDebug("setBind: [status: notRun, reason: [deviceIP: CLOUD]]")
+		logWarn("setBind: [status: notRun, reason: [deviceIP: CLOUD]]")
 	} else {
-		sendLanCmd("""{"${bindService()}":{"bind":{"username":"${userName}",""" +
+		sendLanCmd("""{"cnCloud":{"bind":{"username":"${userName}",""" +
 				   """"password":"${password}"}},""" +
-				   """"${bindService()}":{"get_info":{}}}""")
+				   """"cnCloud":{"get_info":{}}}""")
 	}
 }
 
 def setUnbind() {
 	if (getDataValue("deviceIP") == "CLOUD") {
-		logDebug("setUnbind: [status: notRun, reason: [deviceIP: CLOUD]]")
+		logWarn("setUnbind: [status: notRun, reason: [deviceIP: CLOUD]]")
 	} else {
-		sendLanCmd("""{"${bindService()}":{"unbind":""},""" +
-				   """"${bindService()}":{"get_info":{}}}""")
+		sendLanCmd("""{"cnCloud":{"unbind":""},""" +
+				   """"cnCloud":{"get_info":{}}}""")
 	}
 }
 
@@ -468,9 +457,6 @@ def extractTcpResp(response) {
 	}
 }
 
-
-
-
 ////////////////////////////////////////
 def handleCommsError() {
 	Map logData = [:]
@@ -496,6 +482,7 @@ def handleCommsError() {
 		}
 	}
 }
+
 /////////////////////////////////////////////
 def setCommsError(status) {
 	if (!status) {
