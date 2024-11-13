@@ -16,15 +16,25 @@ metadata {
         attribute "OnOffTransitionTime", "number"
         attribute "OnTransitionTime", "number"
         attribute "OffTransitionTime", "number"
+        attribute "MinLevel", "number"
+        attribute "MaxLevel", "number"
+        attribute "VisibleIndicator", "number"
     }
     preferences {
         input(name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true)
         input(name:'logEnable', type:'bool', title:'Enable debug logging', defaultValue:false)
     }
 }
+
 import groovy.transform.Field
 import hubitat.helper.HexUtils
 import hubitat.matter.DataType
+import java.util.concurrent.*
+import groovy.json.JsonBuilder
+import java.lang.Math
+import org.apache.commons.lang3.StringUtils
+import groovy.transform.CompileStatic
+import hubitat.helper.HexUtils
 
 void installed() {
     log.info "Installed..."
@@ -191,22 +201,6 @@ void setLevel( Map params = [:] ) {
         log.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
-
-// void startLevelChange(direction) { parent?.startLevelChange(ep: getEndpoint(), direction:direction) }
-
-// void stopLevelChange() { parent?.stopLevelChange(ep: getEndpoint()) }
-
-
-// library (
-//         base: "driver",
-//         author: "jvm33",
-//         category: "matter",
-//         description: "Methods Common to Matter Drivers",
-//         name: "parseDescriptionAsDecodedMap",
-//         namespace: "matterTools",
-//         documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-//         version: "0.0.1"
-// )
 
 // Per Matter Spec Appendix A.6, values greater than 0b11000 are reserved, except for 0b00011000 which is End-of-Container
 Boolean isReservedValue(Integer controlOctet){
@@ -483,17 +477,6 @@ Map parseDescriptionAsDecodedMap(description){
     }
 }
 
-// library (
-//         base: "driver",
-//         author: "jvm33",
-//         category: "matter",
-//         description: "Formats Matter Commands",
-//         name: "matterHelperUtilities",
-//         namespace: "matterTools",
-//         documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-//         version: "0.0.1"
-// )
-
 // Matter payloads need hex parameters of greater than 2 characters to be pair-reversed.
 // This function takes a list of parameters and pair-reverses those longer than 2 characters.
 // Alternatively, it can take a string and pair-revers that.
@@ -510,27 +493,6 @@ private String byteReverseParameters(List<String> parameters) {
     }
     return rStr
 }
-
-// Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
-// Does a wildcard refresh if parameters are not specified (ep=FFFF / cluster=FFFFFFFF/ endpoint=FFFFFFFF is the Matter wildcard designation
-void xrefreshMatter(Map params = [:]) {
-    try {
-        Map inputs = [ep:0xFFFF, clusterInt: 0xFFFFFFFF, attrInt: 0xFFFFFFFF] << params
-        assert inputs.ep instanceof Integer         // Make sure the type is as expected!
-        assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
-        assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
-
-       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
-        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
-
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-    } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
 
 void writeClusterAttribute(clusterId, attributeId, hexValue, dataType) {
     writeClusterAttribute(
@@ -582,24 +544,7 @@ void readClusterAttribute(Map params = [:]) {
     }
 }
 
-// metadata {
-//    definition (name: "Get All Attributes and Events", namespace: "matterTools", author: "jvm33") {
-//       capability "Refresh"
-//       capability "Configuration"
-//       command "unsubscribeAll"
-//       command "showStoredAttributeData"
-//       // command "eventPaths"
-//    }
-//     preferences {
-//         input(name:'txtEnable', type:'bool', title:'Enable additional description text logging', defaultValue:true)
-//         input(name:'logEnable', type:'bool', title:'Enable debug logging', defaultValue:true)
-//         input name: 'advancedOptions', type: 'bool', title: '<b>Advanced Options</b>', description: '<i>These advanced options should be already automatically set in an optimal way for your device...</i>', defaultValue: false
-//     }
-// }
-import java.util.concurrent.*
-import groovy.json.JsonBuilder
 
-@Field static ConcurrentHashMap globalDataStorage = new ConcurrentHashMap(32, 0.75, 1) // Intended to Store info. that does not change. Default is static
 
 // Stores attribute values in nested ConcurrentHashMaps. Because this code retrieves many attributes at once, use ConcurrentHashMaps to ensure thread safety.
 void storeRetrievedData(Map descMap){
@@ -638,16 +583,6 @@ void showStoredAttributeData(){
     log.info "<pre> ${new JsonBuilder(globalDataStorage.get(netId)).toPrettyString()}"
 }
 
-def xxconfigure(){
-    subscribeAll()
-}
-
-def xxrefresh(){
-    log.info "Refreshing all endpoints, all clusters, all attributes: "
-    String cmd = 'he rattrs [{"ep":"0xFFFF","cluster":"0xFFFFFFFF","attr":"0xFFFFFFFF"}]'
-    sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-}
-
 void unsubscribeAll(){
     String cmd = matter.unsubscribe()
     log.info "Sending command to Unsubscribe from all attribute reports: " + cmd
@@ -673,37 +608,245 @@ void eventPaths(){  // not currently used
     log.debug matter.subscribe(0, 0x00FF, eventPaths)
 }
 
-def xxparse(String description) {
-    Map descMap
-    try {
-        if (txtEnable) log.info "Parsing description string: <br>${description}"
-        descMap = matter.parseDescriptionAsMap(description)
-        descMap.put("endpointInt", (Integer.parseInt(descMap.endpoint, 16)))
 
-        if (txtEnable) log.info "Parsed description string as Map is: <br>${descMap}"
-        storeRetrievedData(descMap)
-    } catch (e) {
-        log.error "Caught error ${e} trying to parse descripiton string:<br>${description}"
-        throw(e)
+List getHubitatEvents(Map descMap) {
+    try {
+        // Certain clusters have the same set of matching attributes. For those clusters, rather than storing
+        // multiple duplicated copies of their transform data, one copy is stored (the "first copy"), and other clusters
+        // that have the same attributes (the "aliased clusters") are mapped to the first copy
+        Map aliasedCluster = [ 0x040D:0x040C, 0x0413:0x040C, 0x0415:0x040C, 0x042A:0x040C, // Concentraton Measurement Clusters
+            0x042B:0x040C, 0x042C:0x040C, 0x042D:0x040C, 0x042E:0x040C, 0x042F:0x040C // More Concentraton Measurement Clusters
+            ]
+        // The next line determines if you should use an aliased cluster mapping for descMap.clusterInt, or just use clusterInt
+        Integer retrieveThisCluster = (descMap.clusterInt in aliasedCluster) ? aliasedCluster.get(descMap.clusterInt) : descMap.clusterInt
+
+        List rEvents = globalAllEventsMap.get(retrieveThisCluster)
+            ?.get(descMap.attrInt)
+                ?.collect{ Map rValue = [:]
+                        rValue << [name:it.attribute] // First copy the attribute string as the name of the event
+
+                        // Now figure out the value for the event using the valueTransform, but first check for null so you don't throw an error applying the transform!
+                         if (descMap.decodedValue.is(null)) {
+                              rValue <<[value:null]
+                         } else if ((it.containsKey("valueTransform")) && (it.valueTransform instanceof Closure)) {
+                              rValue << [value:(it.valueTransform(descMap.decodedValue))] // if valueTransform is a closure, apply the transform Closure to the data received from the node
+                         } else {
+                              rValue << [value: (descMap.decodedValue)]  // else just copy the decoded value
+                        }
+
+                        rValue << ( it.units ? [units:(it.units)]  : [:] )
+
+                        // Now let's form a descriptionText string
+                        // If you have a descriptionText field and it is a closure, then form the description text using
+                        // that Closure supplied with the event's value (the value then can be used in the description)
+                        // Else, for a description string using the attribute name and add the value
+                          String newDescription
+                          if (it.descriptionText && (it.descriptionText instanceof Closure)) {
+                              newDescription = it.descriptionText(rValue.value)
+                          } else {
+                                newDescription = "${StringUtils.splitByCharacterTypeCamelCase(rValue.name).join(" ")} attribute set to ${rValue.value}"
+                                if (it.units) { newDescription = newDescription + it.units }
+                          }
+                        rValue << ( [descriptionText:newDescription])
+                        rValue << ( it.isStateChange ? [isStateChange:true]  : [:] ) // Was an isStateChange clause stated, if so, copy it if it is true. False is implied.
+                        rValue << ( [clusterInt : (descMap.clusterInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra cluster info for external device
+                        rValue << ( [attrInt : (descMap.attrInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra attribute info for external device
+                        rValue << ( [endpointInt : (descMap.endpointInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra cluster info for external device
+                        rValue << ( [jsonValue: (new JsonBuilder(descMap.decodedValue)) ]) // Event is sent on Hubitat's Event stream to external devices, so let's include original data in JSON form for external device
+                    }
+        return rEvents
+    } catch (AssertionError e) {
+        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing getHubitatEvents inputs ${descMap}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
-/*
-Requires importing matterTools.MatterEnumTypes
-*/
-// library (
-//         base: "driver",
-//         author: "jvm33",
-//         category: "matter",
-//         description: "Create Hubitat Events from Matter Attribute Data",
-//         name: "createListOfMatterSendEventMaps",
-//         namespace: "matterTools",
-//         documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-//         version: "0.0.1"
-// )
-import java.lang.Math
-import org.apache.commons.lang3.StringUtils
-// //////////////////////
+// This next function will generally override device.getEndpointId()
+Integer getEndpointIdInt(com.hubitat.app.DeviceWrapper thisDevice) {
+    String rValue =  thisDevice?.getDataValue("endpointId") ?:   thisDevice?.endpointId
+    if (rValue.is( null )) {
+        log.error "Device ${thisDevice.displayName} does not have a defined endpointId. Fix this!"
+        return null
+    }
+    return Integer.parseInt(rValue, 16)
+}
+
+// Get all the child devices for a specified endpoint.
+List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [:] ) {
+    Map inputs = [ep: null ] << params
+    assert inputs.ep instanceof Integer
+    childDevices.findAll{ getEndpointIdInt(it) == inputs.ep }
+}
+
+
+// off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
+void componentOff(com.hubitat.app.DeviceWrapper cd){ off(ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
+void off(){
+    try {
+        Map inputs = [ ep:getEndpointIdInt(device) ]
+        assert inputs.ep instanceof Integer  // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
+void componentOn(com.hubitat.app.DeviceWrapper cd){ on( ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
+void on(){
+    if (device.currentValue("switch") == "off") {
+        setLevel(device.currentValue("level") as Integer)
+        return
+    }
+
+    try {
+        Map inputs = [ ep:getEndpointIdInt(device)]
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "on")
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+// toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
+// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
+// child device drivers can directly call the named parameter function supplying its endpoint in the call.
+void toggleOnOff( Map params = [:] ){
+    try {
+        Map inputs = [ ep:getEndpointIdInt(device)] << params
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing toggleOnOff with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+
+//offWithEffect implements Matter 1.2 Cluster Spec Section 1.5.7.4, OffWithEffect command
+// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
+// child device drivers can directly call the named parameter function supplying its endpoint in the call.
+void offWithEffect( Map params = [:] ){
+    try {
+        Map inputs = [ ep: getEndpointIdInt(device), effectIdentifier: 0, effectVariant:0] << params
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        assert inputs.effectIdentifier instanceof Integer && (0..1).contains(inputs.effectIdentifier)
+        assert (inputs.effectVariant instanceof Integer)  && (0..2).contains(inputs.effectVariant )
+
+        List<Map<String, String>> fields = []
+            fields.add(matter.cmdField(DataType.UINT8,  0, HexUtils.integerToHexString(inputs.effectIdentifier, 1) )) // effectIdentifier
+            fields.add(matter.cmdField(DataType.UINT16, 1, HexUtils.integerToHexString(inputs.effectVariant   , 1)  )) // effectVariant
+
+        String cmd = matter.invoke(inputs.ep, 0x0006, 0x40, fields)
+        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in offWithEffect() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing offWithEffect with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+
+
+// Identify Cluster 0x0003 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
+@Field static Map IdentifyTypeEnum =   [ 0:"None",     1:"LightOutput",    2:"VisibleIndicator",    3:"AudibleBeep",    4:"Display",    5:"Actuator"] // Cluste 0x0003
+@Field static Map EffectIdentifierEnumType = [ 0:"Blink", 1:"Breathe", 2:"Okay", 0x0B:"ChannelChange", 0xFE:"FinishEffect", 0xFF:"StopEffect"]
+@Field static Map EffectVariantEnumType = [0:"Default"]
+
+// OnOff Cluster 0x0006 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
+@Field static Map EffectIdentifierEnum = [0:"DelayedAllOff", 1:"DyingLIght"]
+@Field static Map DelayedAllOffEffectVariantEnum = [0:"DelayedAllOffEffectVariantEnum", 1:"NoFade", 2:"DelayedOffSlowFade"]
+@Field static Map DyingLightEffectVariantEnumType = [0:"DyingLightFadeOff"]
+
+// Level Cluster 0x0008 Enum Data Types (Matter Cluster Spec. Section 1.6.5)
+// Haven't needed any yet, so not added!
+
+// Color Cluster 0x0300 Enum Data Types (Matter Cluster Spec. Section 3.2)
+// None Defined!
+
+// Basic Information Cluster 0x0028 Enum Data Types (Matter Cluster Spec. Section 11.1.4)
+@Field static Map ProductFinishEnumType = [0:"Other", 1:"Matte", 2:"Satin", 3:"Polished", 4:"Rugged", 5:"Fabric"]
+@Field static Map ColorEnumType = [
+    0:"Black", 1:"Navy", 2:"Green", 3:"Teal", 4:"Maroon", 5:"Purple", 6:"Olive", 7:"Gray",
+    8:"Blue", 9:"Lime", 10:"Aqua", 11:"Red", 12:"Fuscia", 13:"Yellow", 14:"White",
+    15:"Nickel", 16:"Chrome", 17:"Brass", 18:"Copper", 19:"Silver", 20:"Gold"
+    ]
+
+// Air Quality Cluster 0x005B Enum Data Types (Matter Cluster Spec. Section 2.9.5)
+@Field static Map AirQualityEnumType = [ 0:"Unknown",     1:"Good",    2:"Fair",    3:"Moderate",    4:"Poor",    5:"VeryPoor",    6:"ExtremelyPoor"]
+
+// Smoke CO Alarm Cluster (Matter Cluster Spec. Section 2.11.5)
+@Field static Map AlarmStateEnum = [0:"Normal", 1:"Warning", 2:"Critical" ]
+@Field static Map SensitivityEnum = [0:"High", 1:"Standard", 2:"Low"]
+@Field static Map ExpressedStateEnum = [0:"Normal", 1:"SmokeAlarm", 2:"COAlarm", 3:"BatteryAlert", 4:"Testing", 5:"HardwareFault", 6:"EndOfService", 7:"InterconnectSmoke", 8:"InterconnectCO"]
+@Field static Map MuteStateEnum = [0:"NotMuted", 1:"Muted" ]
+@Field static Map EndOfServiceEnum = [0:"Normal", 1:"Expired"]
+@Field static Map ContaminationStateEnum = [0:"Normal", 1:"Low", 2:"Warning", 3:"Critical" ]
+
+// Thread Network Diagnostics Cluster 0x0035 (Matter **Core** Spec. Section 11.13.5)
+@Field static Map NetworkFaultEnum = [0:"Unspecified", 1:"LinkDown", 2:"HardwareFailure", 3:"NetworkJammed"]
+// ConnectionStatusEnum - same as WiFi
+@Field static Map RoutingRoleEnum = [0:"Unspecified", 1:"Unassigned", 2:"SleepyEndDevice", 3:"EndDevice", 4:"REED", 5:"Router", 6:"Leader"]
+// (Many other types not included)
+
+
+// Wi-Fi Network Diagnostics Cluster 0x0036 (Matter **Core** Spec. Section 11.14.5)
+@Field static Map SecurityTypeEnum = [0:"Unspecified", 1:"None", 2:"WEP", 3:"WPA", 4:"WPA2", 5:"WPA3"]
+@Field static Map WiFiVersionEnum = [0:"a", 1:"b", 2:"g", 3:"n", 4:"ac", 5:"ax", 6:"ah"]
+@Field static Map AssociationFailureCauseEnum = [0:"Unknown", 1:"AssociationFailed", 2:"AuthenticationFailed", 3:"SsidNotFound"]
+@Field static Map ConnectionStatusEnum = [0:"Connected", 1:"NotConnected"]
+
+// Ehternet Network Diagnostics Cluster 0x0037 (Matter **Core** Spec. Section 11.15.5)
+@Field static Map PHYRateEnum = [0:"Rate10M", 1:"Rate100M", 2:"Rate1G", 3:"Rate2_5G", 4:"Rate5G", 5:"Rate10G", 6:"Rate40G", 7:"Rate100G", 8:"Rate200G", 9:"Rate400G"]
+
+
+// PowerSource Cluster 0x002F (Matter **Core** Spec. Section 11.7.5)
+@Field static Map WiredFaultEnum = [0:"Unspecified", 1:"OverVoltage", 2:"UnderVoltage"]
+@Field static Map BatFaultEnum = [0:"Unspecified", 1:"OverTemp", 2:"UnderTemp"]
+@Field static Map BatChargeFaultEnum = [
+    0:"Unspecified", 1:"AmbientTooHot", 2:"AmbientTooCold", 3:"BatteryTooHot", 4:"BatteryTooCold", 5:"BatteryAbsent",
+    6:"BatteryOverVoltage", 7:"BatteryUnderVoltage", 8:"ChargerOverVoltage", 9:"ChargerUnderVoltage", 10:"SafetyTimeout",
+    11:"ChargerOverCurrent", 12:"UnexpectedVoltage", 13:"ExpectedVoltage", 14:"GroundFault", 15:"ChargeSignalFailure", 16:"SafetyTimeout"
+    ]
+@Field static Map PowerSourceStatusEnum = [ 0:"Unspecified", 1:"Active", 2:"Standby", 3:"Unavailable"]
+@Field static Map WiredCurrentTypeEnum = [ 0:"AC", 1:"DC"]
+@Field static Map BatChargeLevelEnum = [ 0:"OK", 1:"Warning", 2:"Critical"]
+@Field static Map BatReplaceabilityEnum = [ 0:"Unspecified", 1:"NotReplaceable", 2:"UserReplaceable", 3:"FactoryReplaceable"]
+@Field static Map BatCommonDesignationEnum = [
+    0:"Unspecified", 1:"AAA", 2:"AA", 3:"C", 4:"D", 5:"4v5", 6:"6v0", 7:"9v0",
+    8:"1_2AA", 9:"AAAA", 10:"A", 11:"B", 12:"F", 13:"N", 14:"No6", 15:"SubC", 16:"A23",
+    17:"A27", 18:"BA5800", 19:"Duplex", 20:"4SR44", 21:"523", 22:"531", 23:"15V0", 24:"22v5",
+    25:"30v0", 26:"45v0", 27: "67v5", 28:"J", 29:"CR123A", 30:"CR2", 31:"2CR5", 32:"CR_P2", 33:"CR_V3",
+    34:"SR41", 35:"SR43", 36:"SR44", 37:"SR45", 38:"SR48", 39:"SR54", 40:"SR55", 41:"SR57", 42:"SR58",
+    43:"SR59", 44:"SR60", 45:"SR63", 46:"SR64", 47:"SR65", 48:"SR66", 49:"SR67", 50:"SR68", 51:"SR69",
+    52:"SR516", 53:"SR731", 54:"SR712", 55:"LR932", 56:"A5", 57:"A10", 58:"A13",
+    59:"A312", 60:"A675", 61:"AC41E", 62:"10180", 63:"10280", 64:"10440", 65:"14250", 66:"14430",
+    67:"14500", 68:"14650", 69:"15270", 70:"16340", 71:"RCR123A", 72:"17500", 73:"17670", 74:"18350",
+    75:"18500", 76:"18650", 77:"19670", 78:"2550", 79:"26650", 80:"32600"
+    ]
+@Field static Map BatApprovedChemistryEnum = [
+    0:"Unspecified",
+    1:"Alkaline", 2:"LithiumCarbonFluoride", 3:"LithiumChromiumOxide", 4:"LithiumCopperOxide", 5:"LithiumIronDisulfide",
+    6:"LithiumManganeseDioxide", 7:"LithiumThionylChloride", 8:"Magnesium", 9:"MercuryOxide", 10:"NickelOxyhydride",
+    11:"SilverOxide", 12:"ZincAir", 13:"ZincCarbon", 14:"ZincChloride", 15:"ZincManganeseDioxide",
+    16:"LeadAcid", 17:"LithiumCobaltOxide", 18:"LithiumIon", 19:"LithiumIonPolymer", 20:"LithiumIronPhosphate",
+    21:"LithiumSulfur", 22:"LithiumTitanate", 23:"NickelCadmium", 24:"NickelHydrogen", 25:"NickelIron",
+    26:"NickelMetalHydride", 27:"NickelZinc", 28:"SilverZinc", 29:"SodiumIon", 30:"SodiumSulfur",
+    31:"ZincBromide", 32:"ZincCerium",
+    ]
+@Field static Map BatChargeStateEnum = [ 0:"Unknown", 1:"IsCharging", 2:"IsAtFullCharge", 3:"IsNotCharging", 4:"IsDischarging", 5:"IsTransitioning", ]
+
+// Concentration Measurement Cluster 0x040C (Matter Spec. Section 2.10.5)
+@Field static Map MeasurementUnitEnum =   [ 0:"PPM", 1:"PPB", 2:"PPT", 3:"MGM3", 4:"UGM3", 5:"NGM3", 6:"PM3" ]
+@Field static Map MeasurementMediumEnum = [ 0:"Air", 1:"Water", 2:"Soil" ]
+@Field static Map LevelValueEnum =        [ 0:"Unknown", 1:"Low", 2:"Medium", 3:"High", 4:"Critical" ]
 
 @Field static Closure toTenths = { it / 10}      // Hex to .1 conversion.
 @Field static Closure toCenti =  { it / 100}     // Hex to .01 conversion.
@@ -1133,379 +1276,4 @@ dv = device value - usually the content of the event map's "value" field after p
    ],
 ]
 
-List getHubitatEvents(Map descMap) {
-    try {
-        // Certain clusters have the same set of matching attributes. For those clusters, rather than storing
-        // multiple duplicated copies of their transform data, one copy is stored (the "first copy"), and other clusters
-        // that have the same attributes (the "aliased clusters") are mapped to the first copy
-        Map aliasedCluster = [ 0x040D:0x040C, 0x0413:0x040C, 0x0415:0x040C, 0x042A:0x040C, // Concentraton Measurement Clusters
-            0x042B:0x040C, 0x042C:0x040C, 0x042D:0x040C, 0x042E:0x040C, 0x042F:0x040C // More Concentraton Measurement Clusters
-            ]
-        // The next line determines if you should use an aliased cluster mapping for descMap.clusterInt, or just use clusterInt
-        Integer retrieveThisCluster = (descMap.clusterInt in aliasedCluster) ? aliasedCluster.get(descMap.clusterInt) : descMap.clusterInt
-
-        List rEvents = globalAllEventsMap.get(retrieveThisCluster)
-            ?.get(descMap.attrInt)
-                ?.collect{ Map rValue = [:]
-                        rValue << [name:it.attribute] // First copy the attribute string as the name of the event
-
-                        // Now figure out the value for the event using the valueTransform, but first check for null so you don't throw an error applying the transform!
-                         if (descMap.decodedValue.is(null)) {
-                              rValue <<[value:null]
-                         } else if ((it.containsKey("valueTransform")) && (it.valueTransform instanceof Closure)) {
-                              rValue << [value:(it.valueTransform(descMap.decodedValue))] // if valueTransform is a closure, apply the transform Closure to the data received from the node
-                         } else {
-                              rValue << [value: (descMap.decodedValue)]  // else just copy the decoded value
-                        }
-
-                        rValue << ( it.units ? [units:(it.units)]  : [:] )
-
-                        // Now let's form a descriptionText string
-                        // If you have a descriptionText field and it is a closure, then form the description text using
-                        // that Closure supplied with the event's value (the value then can be used in the description)
-                        // Else, for a description string using the attribute name and add the value
-                          String newDescription
-                          if (it.descriptionText && (it.descriptionText instanceof Closure)) {
-                              newDescription = it.descriptionText(rValue.value)
-                          } else {
-                                newDescription = "${StringUtils.splitByCharacterTypeCamelCase(rValue.name).join(" ")} attribute set to ${rValue.value}"
-                                if (it.units) { newDescription = newDescription + it.units }
-                          }
-                        rValue << ( [descriptionText:newDescription])
-                        rValue << ( it.isStateChange ? [isStateChange:true]  : [:] ) // Was an isStateChange clause stated, if so, copy it if it is true. False is implied.
-                        rValue << ( [clusterInt : (descMap.clusterInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra cluster info for external device
-                        rValue << ( [attrInt : (descMap.attrInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra attribute info for external device
-                        rValue << ( [endpointInt : (descMap.endpointInt)]) // Event is sent on Hubitat's Event stream to external devices, so let's include some extra cluster info for external device
-                        rValue << ( [jsonValue: (new JsonBuilder(descMap.decodedValue)) ]) // Event is sent on Hubitat's Event stream to external devices, so let's include original data in JSON form for external device
-                    }
-        return rEvents
-    } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing getHubitatEvents inputs ${descMap}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-
-// library (
-//         base: "driver",
-//         author: "jvm33",
-//         category: "matter",
-//         description: "Child device Support Functions",
-//         name: "endpointAndChildDeviceTools",
-//         namespace: "matterTools",
-//         documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-//         version: "0.5.0"
-// )
-
-
-/*
-Following method selects a component driver types for an endpoint based on Matter device type and installed driver options
-*/
-
-// Map getComponentDriverByDeviceType(Map params = [:] ){
-//     Map inputs = [deviceType:null] << params
-//     assert inputs.deviceType instanceof Integer
-//      // The following list can have multiple choices for each device type. Put them in ordered rank!  Lower priority is better!
-//     Map<List<Map>> componentDriver = [
-//         0x0015:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Contact Sensor",         properties:[isComponent:false, name:null, label: null] ] ], // Contact Sensor
-//         0x0016:[[priority:1, namespace:"matterTools",  name:"Matter Device Management",                 properties:[isComponent:true,  name:null, label: null] ] ], // Device Management
-//         0x0076:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Smoke Detector",         properties:[isComponent:false, name:null, label: null] ] ], // Smoke CO Alarm
-//         0x0100:[[priority:1, namespace:"matterTools" , name:"Matter Generic Component Switch",          properties:[isComponent:false, name:null, label: null] ],  // On/Off Light,
-//                 [priority:2, namespace:"hubitat" ,     name:"Generic Component Switch",                 properties:[isComponent:false, name:null, label: null] ]
-//                ],
-//         0x0101:[[priority:1, namespace:"matterTools",  name:"Matter Generic Component Dimmer",          properties:[isComponent:false, name:null, label: null] ],  // Dimmable Light
-//                 [priority:2, namespace:"hubitat" ,     name:"Generic Component Dimmer",                 properties:[isComponent:false, name:null, label: null] ]
-//                ],
-//         0x0106:[[priority:1, namespace:"matterTools",  name:"Matter Generic Component Illuminance Sensor",      properties:[isComponent:false, name:null, label: null] ] ], // Illuminance Sensor
-//         0x0107:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Motion Sensor",          properties:[isComponent:false, name:null, label: null] ] ], // Occupancy Sensor (Motion Sensor)
-//         0x010A:[[priority:1, namespace:"matterTools" , name:"Matter Generic Component Switch",          properties:[isComponent:false, name:null, label: null] ],  // On/Off Plug-In Unit,
-//                 [priority:2, namespace:"hubitat" ,     name:"Generic Component Switch",                 properties:[isComponent:false, name:null, label: null] ]
-//                ],
-//         0x010B:[[priority:1, namespace:"matterTools",  name:"Matter Generic Component Dimmer",          properties:[isComponent:false, name:null, label: null] ],  // Dimmable Plug-In
-//                 [priority:2, namespace:"hubitat" ,     name:"Generic Component Dimmer",                 properties:[isComponent:false, name:null, label: null] ]
-//                ],
-//         0x010C:[[priority:1, namespace:"hubitat" ,     name:"Generic Component CT",                     properties:[isComponent:false, name:null, label: null] ] ], // Color Temp Light
-//         0x010D:[[priority:1, namespace:"matterTools" , name:"Matter Generic Component RGBW",                properties:[isComponent:false, name:null, label: null] ],  // Extended Color Light
-//                 [priority:2, namespace:"hubitat" ,     name:"Generic Component RGBW",                   properties:[isComponent:false, name:null, label: null] ]
-//                ],
-//         0x0302:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Temperature Sensor",     properties:[isComponent:false, name:null, label: null] ] ], // Temperature Sensor
-//         0x0307:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Humidity Sensor",        properties:[isComponent:false, name:null, label: null] ] ], // Humidity Sensor
-//         0x0850:[[priority:1, namespace:"hubitat" ,     name:"Generic Component Contact Sensor",         properties:[isComponent:false, name:null, label: null] ] ], // On/Off Sensor
-//     ]
-
-//     List<Map> matterDriverCandidatesList = componentDriver.get(inputs.deviceType)
-
-//     List<Map> allInstalledDrivers = getInstalledDrivers()
-
-//     // Go through list of candidate drivers and select the one with the lowest priority value that is also installed in Hubitat
-//     List childDeviceDriverCandidates = matterDriverCandidatesList?.findAll({ driver -> allInstalledDrivers.find{ ((it.name == driver.name) && (it.namespace == driver.namespace))} })
-//     // Return lowest priority
-//     return childDeviceDriverCandidates?.min{it.priority}
-// }
-
-// com.hubitat.app.DeviceWrapper checkAndCreateChildDevices(decodedDescMap){
-//     try{
-//         Integer deviceType = decodedDescMap.decodedValue[0][0]
-
-//         // No child devices for Generic Switch and Mode Select!
-//         if (deviceType in [0x000F, 0x0050, 0x0103, 0x0104, 0x0105]) {
-//             if(logEnable) log.warn "No child device created for endpoint ${decodedDescMap.endpointInt} device type ${deviceType}. This is expected."
-//             return null
-//         }
-
-//         com.hubitat.app.DeviceWrapper cd = childDevices.find{ getEndpointIdInt(it) == decodedDescMap.endpointInt }
-//         // Do nothing if child devices already exist for this endpoint
-//         if(cd) {
-//             if(logEnable) log.debug "In method checkAndCreateChildDevices, did nothing since child device already exists."
-//             return null
-//         }
-
-//         // Get a list of all candidate drivers that work for this endpoint type, in preferenc rank
-//         Map  childDeviceDriver = getComponentDriverByDeviceType(deviceType:deviceType)
-//         assert childDeviceDriver
-
-//         log.info "Creating child device for endpoint ${decodedDescMap.endpointInt} using driver: ${childDeviceDriver.name}"
-
-//         String childDeviceNetworkID = device.deviceNetworkId + "-ep0x${ HexUtils.integerToHexString(decodedDescMap.endpointInt, 2).padLeft(4, "0") }"
-
-//         childDeviceDriver.properties.endpointId = HexUtils.integerToHexString( decodedDescMap.endpointInt, 2)
-
-//         cd = addChildDevice(childDeviceDriver.namespace, childDeviceDriver.name, childDeviceNetworkID, childDeviceDriver.properties)
-//         return cd // return newly created child device or null
-//     } catch (AssertionError e) {
-//         log.error "Attempting to create a child device, but unable to find a suitable child device driver candidate for Matter device type ${deviceType}."
-//     } catch(e){
-//         log.error "<pre>${e}<br><br>when processing checkAndCreateChildDevices with inputs ${decodedDescMap}<br><br>Stack trace:<br>${getStackTrace(e) }"
-//     }
-// }
-
-// This next function will generally override device.getEndpointId()
-Integer getEndpointIdInt(com.hubitat.app.DeviceWrapper thisDevice) {
-    String rValue =  thisDevice?.getDataValue("endpointId") ?:   thisDevice?.endpointId
-    if (rValue.is( null )) {
-        log.error "Device ${thisDevice.displayName} does not have a defined endpointId. Fix this!"
-        return null
-    }
-    return Integer.parseInt(rValue, 16)
-}
-
-// Get all the child devices for a specified endpoint.
-List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [:] ) {
-    Map inputs = [ep: null ] << params
-    assert inputs.ep instanceof Integer
-    childDevices.findAll{ getEndpointIdInt(it) == inputs.ep }
-}
-
-
-// library (
-//         base: "driver",
-//         author: "jvm33",
-//         category: "matter",
-//         description: "Create Hubitat Events from Matter Attribute Data",
-//         name: "matterEnumTypes",
-//         namespace: "matterTools",
-//         documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-//         version: "0.0.1"
-// )
-
-import groovy.transform.CompileStatic
-
-// Identify Cluster 0x0003 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
-@Field static Map IdentifyTypeEnum =   [ 0:"None",     1:"LightOutput",    2:"VisibleIndicator",    3:"AudibleBeep",    4:"Display",    5:"Actuator"] // Cluste 0x0003
-@Field static Map EffectIdentifierEnumType = [ 0:"Blink", 1:"Breathe", 2:"Okay", 0x0B:"ChannelChange", 0xFE:"FinishEffect", 0xFF:"StopEffect"]
-@Field static Map EffectVariantEnumType = [0:"Default"]
-
-// OnOff Cluster 0x0006 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
-@Field static Map EffectIdentifierEnum = [0:"DelayedAllOff", 1:"DyingLIght"]
-@Field static Map DelayedAllOffEffectVariantEnum = [0:"DelayedAllOffEffectVariantEnum", 1:"NoFade", 2:"DelayedOffSlowFade"]
-@Field static Map DyingLightEffectVariantEnumType = [0:"DyingLightFadeOff"]
-
-// Level Cluster 0x0008 Enum Data Types (Matter Cluster Spec. Section 1.6.5)
-// Haven't needed any yet, so not added!
-
-// Color Cluster 0x0300 Enum Data Types (Matter Cluster Spec. Section 3.2)
-// None Defined!
-
-// Basic Information Cluster 0x0028 Enum Data Types (Matter Cluster Spec. Section 11.1.4)
-@Field static Map ProductFinishEnumType = [0:"Other", 1:"Matte", 2:"Satin", 3:"Polished", 4:"Rugged", 5:"Fabric"]
-@Field static Map ColorEnumType = [
-    0:"Black", 1:"Navy", 2:"Green", 3:"Teal", 4:"Maroon", 5:"Purple", 6:"Olive", 7:"Gray",
-    8:"Blue", 9:"Lime", 10:"Aqua", 11:"Red", 12:"Fuscia", 13:"Yellow", 14:"White",
-    15:"Nickel", 16:"Chrome", 17:"Brass", 18:"Copper", 19:"Silver", 20:"Gold"
-    ]
-
-// Air Quality Cluster 0x005B Enum Data Types (Matter Cluster Spec. Section 2.9.5)
-@Field static Map AirQualityEnumType = [ 0:"Unknown",     1:"Good",    2:"Fair",    3:"Moderate",    4:"Poor",    5:"VeryPoor",    6:"ExtremelyPoor"]
-
-// Smoke CO Alarm Cluster (Matter Cluster Spec. Section 2.11.5)
-@Field static Map AlarmStateEnum = [0:"Normal", 1:"Warning", 2:"Critical" ]
-@Field static Map SensitivityEnum = [0:"High", 1:"Standard", 2:"Low"]
-@Field static Map ExpressedStateEnum = [0:"Normal", 1:"SmokeAlarm", 2:"COAlarm", 3:"BatteryAlert", 4:"Testing", 5:"HardwareFault", 6:"EndOfService", 7:"InterconnectSmoke", 8:"InterconnectCO"]
-@Field static Map MuteStateEnum = [0:"NotMuted", 1:"Muted" ]
-@Field static Map EndOfServiceEnum = [0:"Normal", 1:"Expired"]
-@Field static Map ContaminationStateEnum = [0:"Normal", 1:"Low", 2:"Warning", 3:"Critical" ]
-
-// Thread Network Diagnostics Cluster 0x0035 (Matter **Core** Spec. Section 11.13.5)
-@Field static Map NetworkFaultEnum = [0:"Unspecified", 1:"LinkDown", 2:"HardwareFailure", 3:"NetworkJammed"]
-// ConnectionStatusEnum - same as WiFi
-@Field static Map RoutingRoleEnum = [0:"Unspecified", 1:"Unassigned", 2:"SleepyEndDevice", 3:"EndDevice", 4:"REED", 5:"Router", 6:"Leader"]
-// (Many other types not included)
-
-
-// Wi-Fi NEtwork Diagnostics Cluster 0x0036 (Matter **Core** Spec. Section 11.14.5)
-@Field static Map SecurityTypeEnum = [0:"Unspecified", 1:"None", 2:"WEP", 3:"WPA", 4:"WPA2", 5:"WPA3"]
-@Field static Map WiFiVersionEnum = [0:"a", 1:"b", 2:"g", 3:"n", 4:"ac", 5:"ax", 6:"ah"]
-@Field static Map AssociationFailureCauseEnum = [0:"Unknown", 1:"AssociationFailed", 2:"AuthenticationFailed", 3:"SsidNotFound"]
-@Field static Map ConnectionStatusEnum = [0:"Connected", 1:"NotConnected"]
-
-// Ehternet Network Diagnostics Cluster 0x0037 (Matter **Core** Spec. Section 11.15.5)
-@Field static Map PHYRateEnum = [0:"Rate10M", 1:"Rate100M", 2:"Rate1G", 3:"Rate2_5G", 4:"Rate5G", 5:"Rate10G", 6:"Rate40G", 7:"Rate100G", 8:"Rate200G", 9:"Rate400G"]
-
-
-// PowerSource Cluster 0x002F (Matter **Core** Spec. Section 11.7.5)
-@Field static Map WiredFaultEnum = [0:"Unspecified", 1:"OverVoltage", 2:"UnderVoltage"]
-@Field static Map BatFaultEnum = [0:"Unspecified", 1:"OverTemp", 2:"UnderTemp"]
-@Field static Map BatChargeFaultEnum = [
-    0:"Unspecified", 1:"AmbientTooHot", 2:"AmbientTooCold", 3:"BatteryTooHot", 4:"BatteryTooCold", 5:"BatteryAbsent",
-    6:"BatteryOverVoltage", 7:"BatteryUnderVoltage", 8:"ChargerOverVoltage", 9:"ChargerUnderVoltage", 10:"SafetyTimeout",
-    11:"ChargerOverCurrent", 12:"UnexpectedVoltage", 13:"ExpectedVoltage", 14:"GroundFault", 15:"ChargeSignalFailure", 16:"SafetyTimeout"
-    ]
-@Field static Map PowerSourceStatusEnum = [ 0:"Unspecified", 1:"Active", 2:"Standby", 3:"Unavailable"]
-@Field static Map WiredCurrentTypeEnum = [ 0:"AC", 1:"DC"]
-@Field static Map BatChargeLevelEnum = [ 0:"OK", 1:"Warning", 2:"Critical"]
-@Field static Map BatReplaceabilityEnum = [ 0:"Unspecified", 1:"NotReplaceable", 2:"UserReplaceable", 3:"FactoryReplaceable"]
-@Field static Map BatCommonDesignationEnum = [
-    0:"Unspecified", 1:"AAA", 2:"AA", 3:"C", 4:"D", 5:"4v5", 6:"6v0", 7:"9v0",
-    8:"1_2AA", 9:"AAAA", 10:"A", 11:"B", 12:"F", 13:"N", 14:"No6", 15:"SubC", 16:"A23",
-    17:"A27", 18:"BA5800", 19:"Duplex", 20:"4SR44", 21:"523", 22:"531", 23:"15V0", 24:"22v5",
-    25:"30v0", 26:"45v0", 27: "67v5", 28:"J", 29:"CR123A", 30:"CR2", 31:"2CR5", 32:"CR_P2", 33:"CR_V3",
-    34:"SR41", 35:"SR43", 36:"SR44", 37:"SR45", 38:"SR48", 39:"SR54", 40:"SR55", 41:"SR57", 42:"SR58",
-    43:"SR59", 44:"SR60", 45:"SR63", 46:"SR64", 47:"SR65", 48:"SR66", 49:"SR67", 50:"SR68", 51:"SR69",
-    52:"SR516", 53:"SR731", 54:"SR712", 55:"LR932", 56:"A5", 57:"A10", 58:"A13",
-    59:"A312", 60:"A675", 61:"AC41E", 62:"10180", 63:"10280", 64:"10440", 65:"14250", 66:"14430",
-    67:"14500", 68:"14650", 69:"15270", 70:"16340", 71:"RCR123A", 72:"17500", 73:"17670", 74:"18350",
-    75:"18500", 76:"18650", 77:"19670", 78:"2550", 79:"26650", 80:"32600"
-    ]
-@Field static Map BatApprovedChemistryEnum = [
-    0:"Unspecified",
-    1:"Alkaline", 2:"LithiumCarbonFluoride", 3:"LithiumChromiumOxide", 4:"LithiumCopperOxide", 5:"LithiumIronDisulfide",
-    6:"LithiumManganeseDioxide", 7:"LithiumThionylChloride", 8:"Magnesium", 9:"MercuryOxide", 10:"NickelOxyhydride",
-    11:"SilverOxide", 12:"ZincAir", 13:"ZincCarbon", 14:"ZincChloride", 15:"ZincManganeseDioxide",
-    16:"LeadAcid", 17:"LithiumCobaltOxide", 18:"LithiumIon", 19:"LithiumIonPolymer", 20:"LithiumIronPhosphate",
-    21:"LithiumSulfur", 22:"LithiumTitanate", 23:"NickelCadmium", 24:"NickelHydrogen", 25:"NickelIron",
-    26:"NickelMetalHydride", 27:"NickelZinc", 28:"SilverZinc", 29:"SodiumIon", 30:"SodiumSulfur",
-    31:"ZincBromide", 32:"ZincCerium",
-    ]
-@Field static Map BatChargeStateEnum = [ 0:"Unknown", 1:"IsCharging", 2:"IsAtFullCharge", 3:"IsNotCharging", 4:"IsDischarging", 5:"IsTransitioning", ]
-
-// Concentration Measurement Cluster 0x040C (Matter Spec. Section 2.10.5)
-@Field static Map MeasurementUnitEnum =   [ 0:"PPM", 1:"PPB", 2:"PPT", 3:"MGM3", 4:"UGM3", 5:"NGM3", 6:"PM3" ]
-@Field static Map MeasurementMediumEnum = [ 0:"Air", 1:"Water", 2:"Soil" ]
-@Field static Map LevelValueEnum =        [ 0:"Unknown", 1:"Low", 2:"Medium", 3:"High", 4:"Critical" ]
-
-
-/*
-Reference: Matter Application Cluster Specification Version 1.2 ("Matter Cluster Spec"), Section 1.5 "On/Off Cluster"
-Dependencies: Need to import the following
-    matterTools.endpointAndChildDeviceTools   // needed for getEndpointIdInt() function if you have not defined your own!
-
-Library also assumes that descMap also includes the endpoint as an integer (descMap.endpointIdInt).
-This isn't part of the standard "descMap" parsing, but descMap can be augmented immediately after the parseDescriptionAsMap using
-        descMap = matter.parseDescriptionAsMap(description)
-        descMap.put("endpointInt", (Integer.parseInt(descMap.endpoint, 16)))
-See matterTools.commonDriverMethods library for example
-*/
-
-library (
-        base: "driver",
-        author: "jvm33",
-        category: "matter",
-        description: "On Off Cluster 0x0006 Tools",
-        name: "OnOffClusterMethods0x0006",
-        namespace: "matterTools",
-        documentationLink: "https://github.com/jvmahon/Hubitat-Matter",
-        version: "0.0.1"
-)
-
-import hubitat.helper.HexUtils
-
-Boolean supportsOffTimer(){
-    if (logEnable) log.debug "supportsOffTime function not fully implemented in matterTools.OnOffCluster0x0006. Defaults to 'true' as this is Mandatory in Lighting device types"
-    return true
-}
-
-// off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
-void componentOff(com.hubitat.app.DeviceWrapper cd){ off(ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
-void off(){
-    try {
-        Map inputs = [ ep:getEndpointIdInt(device) ]
-        assert inputs.ep instanceof Integer  // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
-        //////sendEvent(name: "switch", value: "off")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
-void componentOn(com.hubitat.app.DeviceWrapper cd){ on( ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
-void on(){
-    if (device.currentValue("switch") == "off") {
-        setLevel(device.currentValue("level") as Integer)
-        ///////sendEvent(name: "switch", value: "on")
-        return
-    }
-
-    try {
-        Map inputs = [ ep:getEndpointIdInt(device)]
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: "on")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
-// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
-// child device drivers can directly call the named parameter function supplying its endpoint in the call.
-void toggleOnOff( Map params = [:] ){
-    try {
-        Map inputs = [ ep:getEndpointIdInt(device)] << params
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing toggleOnOff with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-
-//offWithEffect implements Matter 1.2 Cluster Spec Section 1.5.7.4, OffWithEffect command
-// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
-// child device drivers can directly call the named parameter function supplying its endpoint in the call.
-void offWithEffect( Map params = [:] ){
-    try {
-        Map inputs = [ ep: getEndpointIdInt(device), effectIdentifier: 0, effectVariant:0] << params
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        assert inputs.effectIdentifier instanceof Integer && (0..1).contains(inputs.effectIdentifier)
-        assert (inputs.effectVariant instanceof Integer)  && (0..2).contains(inputs.effectVariant )
-
-        List<Map<String, String>> fields = []
-            fields.add(matter.cmdField(DataType.UINT8,  0, HexUtils.integerToHexString(inputs.effectIdentifier, 1) )) // effectIdentifier
-            fields.add(matter.cmdField(DataType.UINT16, 1, HexUtils.integerToHexString(inputs.effectVariant   , 1)  )) // effectVariant
-
-        String cmd = matter.invoke(inputs.ep, 0x0006, 0x40, fields)
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in offWithEffect() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing offWithEffect with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
+@Field static ConcurrentHashMap globalDataStorage = new ConcurrentHashMap(32, 0.75, 1) // Intended to Store info. that does not change. Default is static
