@@ -48,7 +48,7 @@ void refresh() {
 }
 
 void componentRefresh(com.hubitat.app.DeviceWrapper cd) {
-    refreshMatter(ep:getEndpoint(cd))
+    refreshMatter(ep: getEndpoint(cd))
 }
 
 // Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
@@ -678,13 +678,13 @@ List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [
 
 // "component" variant for legacy Generic Component child device driver support
 void componentOff(com.hubitat.app.DeviceWrapper cd){
-    off(ep:getEndpoint(cd))
+    off(ep: getEndpoint(cd))
 }
 
 // off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
 void off(){
     try {
-        Map inputs = [ ep:getEndpoint(device) ]
+        Map inputs = [ ep: getEndpoint(device) ]
         assert inputs.ep instanceof Integer  // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: "off")
@@ -698,7 +698,7 @@ void off(){
 // on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
 void on(){
     try {
-        Map inputs = [ ep:getEndpoint(device)]
+        Map inputs = [ ep: getEndpoint(device)]
         assert inputs.ep instanceof Integer // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: "on")
@@ -712,7 +712,7 @@ void on(){
 // toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
 void toggleOnOff( Map params = [:] ){
     try {
-        Map inputs = [ ep:getEndpoint(device)] << params
+        Map inputs = [ ep: getEndpoint(device)] << params
         assert inputs.ep instanceof Integer // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: device.currentValue("switch") == "on" ? "off" : "on")
