@@ -7,10 +7,10 @@ metadata {
         capability "ChangeLevel"
         
         command "on"
+        command "toggleOnOff"
         command "setLevel", [[name: "Level*", type:"NUMBER", description:"Level to set (0 to 100)"],
                              [name: "Duration", type:"NUMBER", description:"Transition duration in seconds"]
                             ]
-        command "toggleOnOff" 
 
         // Level Cluster
         attribute "OnOffTransitionTime",    "number"
@@ -215,12 +215,11 @@ Integer getEndpoint(com.hubitat.app.DeviceWrapper thisDevice) {
 
     String rValue =  thisDevice?.getDataValue("endpointId") ?: thisDevice?.endpointId
     if (rValue.is( null )) {
-        log.error "Device ${thisDevice.displayName} does not have a defined endpointId. Fix this!"
-        return null
+        log.error "Device ${thisDevice.displayName} does not have a defined endpointId"
+        return 1
     }
     return Integer.parseInt(rValue, 16)
 }
-
 
 // Per Matter Spec Appendix A.6, values greater than 0b11000 are reserved, except for 0b00011000 which is End-of-Container
 Boolean isReservedValue(Integer controlOctet){
@@ -785,7 +784,6 @@ void offWithEffect( Map params = [:] ){
 // ConnectionStatusEnum - same as WiFi
 @Field static Map RoutingRoleEnum = [0:"Unspecified", 1:"Unassigned", 2:"SleepyEndDevice", 3:"EndDevice", 4:"REED", 5:"Router", 6:"Leader"]
 // (Many other types not included)
-
 
 // Wi-Fi Network Diagnostics Cluster 0x0036 (Matter **Core** Spec. Section 11.14.5)
 @Field static Map SecurityTypeEnum = [0:"Unspecified", 1:"None", 2:"WEP", 3:"WPA", 4:"WPA2", 5:"WPA3"]
