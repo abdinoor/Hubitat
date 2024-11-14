@@ -7,6 +7,7 @@ metadata {
         capability "ChangeLevel"
         
         command "on"
+        command "off"
         command "toggleOnOff"
         command "setLevel", [[name: "Level*", type:"NUMBER", description:"Level to set (0 to 100)"],
                              [name: "Duration", type:"NUMBER", description:"Transition duration in seconds"]
@@ -104,6 +105,7 @@ void setLevel( Map params = [:] ) {
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
         sendEvent(name: "level", value: inputs.level)
+        sendEvent(name: "switch", value: inputs.level ? "on" : "off")
     } catch (AssertionError e) {
         log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
@@ -178,6 +180,7 @@ void parse(String description) {
 // The List of SendEvent Maps may include event Maps that are not needed by a particular driver (as determined based on the attributes of the driver)
 // and those "extra" Maps are discarded. This allows a more generic "event Map" producting method (e.g., matterTools.createListOfMatterSendEventMaps)
 void parse(List sendEventTypeOfEvents) {
+    if (logEnable) log.debug "${device.displayName}: ${description}"
     try {
         List updateLocalStateOnlyAttributes = ["OnOffTransitionTime", "OnTransitionTime", "OffTransitionTime", "MinLevel", "MaxLevel",
                                                "DefaultMoveRate", "OffWaitTime", "Binding", "UserLabelList", "FixedLabelList", "VisibleIndicator",
@@ -675,9 +678,19 @@ List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [
     childDevices.findAll{ getEndpoint(it) == inputs.ep }
 }
 
-// "component" variant for legacy Generic Component child device driver support
-void componentOff(com.hubitat.app.DeviceWrapper cd){
-    off(ep: getEndpoint(cd))
+
+// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
+void on(){
+    try {
+        Map inputs = [ ep: getEndpoint(device)]
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "on")
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
 }
 
 // off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
@@ -694,32 +707,9 @@ void off(){
     }
 }
 
-// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
-void on(){
-    try {
-        Map inputs = [ ep: getEndpoint(device)]
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: "on")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
-void toggleOnOff( Map params = [:] ){
-    try {
-        Map inputs = [ ep: getEndpoint(device)] << params
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: device.currentValue("switch") == "on" ? "off" : "on")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing toggleOnOff with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
+// "component" variant for legacy Generic Component child device driver support
+void componentOff(com.hubitat.app.DeviceWrapper cd){
+    off(ep: getEndpoint(cd))
 }
 
 //offWithEffect implements Matter 1.2 Cluster Spec Section 1.5.7.4, OffWithEffect command
@@ -741,6 +731,20 @@ void offWithEffect( Map params = [:] ){
         log.error "Incorrect parameter type or value used in offWithEffect() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
         log.error "<pre>${e}<br><br>when processing offWithEffect with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+// toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
+void toggleOnOff( Map params = [:] ){
+    try {
+        Map inputs = [ ep: getEndpoint(device)] << params
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: device.currentValue("switch") == "on" ? "off" : "on")
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing toggleOnOff with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
