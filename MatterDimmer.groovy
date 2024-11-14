@@ -7,18 +7,18 @@ metadata {
         capability "ChangeLevel"
         
         command "on"
-        command "setLevel"  , [[name: "Level*", type:"NUMBER", description:"Level to set (0 to 100)"],
-                               [name: "Duration", type:"NUMBER", description:"Transition duration in seconds"]
-                              ]
+        command "setLevel", [[name: "Level*", type:"NUMBER", description:"Level to set (0 to 100)"],
+                             [name: "Duration", type:"NUMBER", description:"Transition duration in seconds"]
+                            ]
         command "toggleOnOff" 
 
         // Level Cluster
-        attribute "OnOffTransitionTime", "number"
-        attribute "OnTransitionTime", "number"
-        attribute "OffTransitionTime", "number"
-        attribute "MinLevel", "number"
-        attribute "MaxLevel", "number"
-        attribute "VisibleIndicator", "number"
+        attribute "OnOffTransitionTime",    "number"
+        attribute "OnTransitionTime",       "number"
+        attribute "OffTransitionTime",      "number"
+        attribute "MinLevel",               "number"
+        attribute "MaxLevel",               "number"
+        attribute "VisibleIndicator",       "number"
     }
     preferences {
         input(name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true)
@@ -41,6 +41,74 @@ void installed() {
     device.updateSetting("txtEnable",[type:"bool",value:true])
     device.updateSetting("logEnable",[type:"bool",value:false])
     refresh()
+}
+
+void refresh() {
+    refreshMatter(ep: getEndpoint() )
+}
+
+void componentRefresh(com.hubitat.app.DeviceWrapper cd) {
+    refreshMatter(ep:getEndpoint(cd))
+}
+
+// Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
+// Does a wildcard refresh if parameters are not specified (ep=FFFF / cluster=FFFFFFFF/ endpoint=FFFFFFFF is the Matter wildcard designation
+void refreshMatter(Map params = [:]) {
+    try {
+        Map inputs = [ep:0xFFFF, clusterInt: 0xFFFFFFFF, attrInt: 0xFFFFFFFF] << params
+        assert inputs.ep instanceof Integer         // Make sure the type is as expected!
+        assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
+        assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
+
+       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
+        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
+
+        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
+        sendEvent(name: "level", value: params.level.is(null) ? device.getDataValue("level") : params.level)
+        sendEvent(name: "switch", value: params.switch.is(null) ? device.getDataValue("switch") : params.switch)
+    } catch (AssertionError e) {
+        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+void setLevel(level, ramp = null, onTime = null ) {
+    setLevel(ep: getEndpoint(),
+             level:level as Integer,
+             transitionTime10ths: ramp.is(null) ? 0 : (ramp * 10) as Integer
+    )
+}
+
+void setLevel( Map params = [:] ) {
+    try {
+        Map inputs = [ep: null , level: null , transitionTime10ths: null ] << params
+        assert inputs.ep instanceof Integer  // Check that endpoint is an integer
+        if (inputs.level instanceof BigDecimal) inputs.level = inputs.level as Integer // Web UI send BigDecimal but want Integer! Fix that.
+        assert inputs.level instanceof Integer
+        inputs.level = Math.round(Math.max(Math.min(inputs.level, 100), 0)) // level is a % and must be between 0 and 100
+
+        assert inputs.transitionTime10ths instanceof Integer
+
+        String hexLevel = HexUtils.integerToHexString((Integer) ( inputs.level  * 2.54), 1)
+        String hexTransitionTime10ths = HexUtils.integerToHexString(inputs.transitionTime10ths, 2 ) // Time is in 10ths of a second! FFFF is the null value.
+
+        List<Map<String, String>> fields = []
+        fields.add(matter.cmdField(DataType.UINT8, 0, hexLevel)) // Level
+        fields.add(matter.cmdField(DataType.UINT16, 1, (hexTransitionTime10ths[2..3] + hexTransitionTime10ths[0..1]) )) // TransitionTime in 0.1 seconds, uint16 0-65534, byte swapped
+        fields.add(matter.cmdField(DataType.UINT8,  2, "00")) // OptionMask, map8
+        fields.add(matter.cmdField(DataType.UINT8,  3, "00"))  // OptionsOverride, map8
+        if (logEnable) log.debug "fields are ${fields}"
+        String cmd = matter.invoke(inputs.ep, 0x0008, 0x04, fields) // Move To Level with On/Off
+        if (logEnable) log.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
+
+        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
+        sendEvent(name: "level", value: inputs.level)
+    } catch (AssertionError e) {
+        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
 }
 
 // This parser handles the Matter event message originating from Hubitat.
@@ -138,69 +206,21 @@ void parse(List sendEventTypeOfEvents) {
     }
 }
 
-void componentRefresh(com.hubitat.app.DeviceWrapper cd) { refreshMatter(ep:getEndpointIdInt(cd)) }
+Integer getEndpoint() {
+    return getEndpoint(device)
+}
 
-void refresh() { refreshMatter(ep: getEndpoint() ) }
+Integer getEndpoint(com.hubitat.app.DeviceWrapper thisDevice) {
+    //device.getDataValue("endpointId").is(null) ? 1 : Integer.parseInt(device.getDataValue("endpointId"))
 
-// Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
-// Does a wildcard refresh if parameters are not specified (ep=FFFF / cluster=FFFFFFFF/ endpoint=FFFFFFFF is the Matter wildcard designation
-void refreshMatter(Map params = [:]) {
-    try {
-        Map inputs = [ep:0xFFFF, clusterInt: 0xFFFFFFFF, attrInt: 0xFFFFFFFF] << params
-        assert inputs.ep instanceof Integer         // Make sure the type is as expected!
-        assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
-        assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
-
-       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
-        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
-
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-    } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    String rValue =  thisDevice?.getDataValue("endpointId") ?: thisDevice?.endpointId
+    if (rValue.is( null )) {
+        log.error "Device ${thisDevice.displayName} does not have a defined endpointId. Fix this!"
+        return null
     }
+    return Integer.parseInt(rValue, 16)
 }
 
-Integer getEndpoint() { device.getDataValue("endpointId").is(null) ? 1 : Integer.parseInt(device.getDataValue("endpointId")) }
-
-void setLevel(level, ramp = null, onTime = null ) {
-    setLevel(ep: getEndpoint(),
-             level:level as Integer,
-             transitionTime10ths: ramp.is(null) ? 0 : (ramp * 10) as Integer
-    )
-}
-
-void setLevel( Map params = [:] ) {
-    try {
-        Map inputs = [ep: null , level: null , transitionTime10ths: null ] << params
-        assert inputs.ep instanceof Integer  // Check that endpoint is an integer
-        if (inputs.level instanceof BigDecimal) inputs.level = inputs.level as Integer // Web UI send BigDecimal but want Integer! Fix that.
-        assert inputs.level instanceof Integer
-        inputs.level = Math.round(Math.max(Math.min(inputs.level, 100), 0)) // level is a % and must be between 0 and 100
-
-        assert inputs.transitionTime10ths instanceof Integer
-
-        String hexLevel = HexUtils.integerToHexString((Integer) ( inputs.level  * 2.54), 1)
-        String hexTransitionTime10ths = HexUtils.integerToHexString(inputs.transitionTime10ths, 2 ) // Time is in 10ths of a second! FFFF is the null value.
-
-        List<Map<String, String>> fields = []
-        fields.add(matter.cmdField(DataType.UINT8, 0, hexLevel)) // Level
-        fields.add(matter.cmdField(DataType.UINT16, 1, (hexTransitionTime10ths[2..3] + hexTransitionTime10ths[0..1]) )) // TransitionTime in 0.1 seconds, uint16 0-65534, byte swapped
-        fields.add(matter.cmdField(DataType.UINT8,  2, "00")) // OptionMask, map8
-        fields.add(matter.cmdField(DataType.UINT8,  3, "00"))  // OptionsOverride, map8
-        if (logEnable) log.debug "fields are ${fields}"
-        String cmd = matter.invoke(inputs.ep, 0x0008, 0x04, fields) // Move To Level with On/Off
-        if (logEnable) log.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
-
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-        sendEvent(name: "level", value: inputs.level)
-    } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
 
 // Per Matter Spec Appendix A.6, values greater than 0b11000 are reserved, except for 0b00011000 which is End-of-Container
 Boolean isReservedValue(Integer controlOctet){
@@ -522,7 +542,10 @@ void writeClusterAttribute(Map params = [:]) {
     }
 }
 
-void readClusterAttribute(clusterId, attributeId) {readClusterAttribute(clusterId:clusterId, attributeId:attributeId)}
+void readClusterAttribute(clusterId, attributeId) {
+    readClusterAttribute(clusterId:clusterId, attributeId:attributeId)
+}
+
 void readClusterAttribute(Map params = [:]) {
     try {
         Map inputs = [ep:null, clusterInt:null, attributeInt:null ] << params
@@ -536,15 +559,12 @@ void readClusterAttribute(Map params = [:]) {
         String cmd = matter.readAttributes(attributePaths)
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-
     } catch (AssertionError e) {
         log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
         log.error "<pre>${e}<br><br>when processing readClusterAttribute with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
-
-
 
 // Stores attribute values in nested ConcurrentHashMaps. Because this code retrieves many attributes at once, use ConcurrentHashMaps to ensure thread safety.
 void storeRetrievedData(Map descMap){
@@ -591,23 +611,10 @@ void unsubscribeAll(){
 
 void subscribeAll(){
     // This is a wildcard subscribe. Subscribes to all endpoints, all clusters, all attributes
-    String cmd = 'he subscribe 0x00 0xFF [{"ep":"0xFFFF","cluster":"0xFFFFFFFF","attr":"0xFFFFFFFF"}]'
+    String cmd = 'subscribe 0x00 0xFF [{"ep":"0xFFFF","cluster":"0xFFFFFFFF","attr":"0xFFFFFFFF"}]'
     log.info "Sending command to Subscribe for all attributes with a 0 second minimum time: " + cmd
     sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-
-    /*
-    cmd = 'he subscribe 0x00 0xFF [{"ep":"0xFFFF","cluster":"0xFFFFFFFF","evt":"0xFFFFFFFF"}]'
-    log.info "Sending command to Subscribe for all events with a 0 second minimum time: " + cmd
-    sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-    */
 }
-
-void eventPaths(){  // not currently used
-    List eventPaths = []
-    eventPaths.add(matter.eventPath("FFFF", 0xFFFF, 0xFFFF))
-    log.debug matter.subscribe(0, 0x00FF, eventPaths)
-}
-
 
 List getHubitatEvents(Map descMap) {
     try {
@@ -662,31 +669,25 @@ List getHubitatEvents(Map descMap) {
     }
 }
 
-// This next function will generally override device.getEndpointId()
-Integer getEndpointIdInt(com.hubitat.app.DeviceWrapper thisDevice) {
-    String rValue =  thisDevice?.getDataValue("endpointId") ?:   thisDevice?.endpointId
-    if (rValue.is( null )) {
-        log.error "Device ${thisDevice.displayName} does not have a defined endpointId. Fix this!"
-        return null
-    }
-    return Integer.parseInt(rValue, 16)
-}
-
 // Get all the child devices for a specified endpoint.
 List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [:] ) {
     Map inputs = [ep: null ] << params
     assert inputs.ep instanceof Integer
-    childDevices.findAll{ getEndpointIdInt(it) == inputs.ep }
+    childDevices.findAll{ getEndpoint(it) == inputs.ep }
 }
 
+// "component" variant for legacy Generic Component child device driver support
+void componentOff(com.hubitat.app.DeviceWrapper cd){
+    off(ep:getEndpoint(cd))
+}
 
 // off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
-void componentOff(com.hubitat.app.DeviceWrapper cd){ off(ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
 void off(){
     try {
-        Map inputs = [ ep:getEndpointIdInt(device) ]
+        Map inputs = [ ep:getEndpoint(device) ]
         assert inputs.ep instanceof Integer  // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "off")
     } catch (AssertionError e) {
         log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
@@ -695,15 +696,9 @@ void off(){
 }
 
 // on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
-void componentOn(com.hubitat.app.DeviceWrapper cd){ on( ep:getEndpointIdInt(cd)) } // "component" variant for legacy Generic Component child device driver support
 void on(){
-    if (device.currentValue("switch") == "off") {
-        setLevel(device.currentValue("level") as Integer)
-        return
-    }
-
     try {
-        Map inputs = [ ep:getEndpointIdInt(device)]
+        Map inputs = [ ep:getEndpoint(device)]
         assert inputs.ep instanceof Integer // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: "on")
@@ -715,13 +710,12 @@ void on(){
 }
 
 // toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
-// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
-// child device drivers can directly call the named parameter function supplying its endpoint in the call.
 void toggleOnOff( Map params = [:] ){
     try {
-        Map inputs = [ ep:getEndpointIdInt(device)] << params
+        Map inputs = [ ep:getEndpoint(device)] << params
         assert inputs.ep instanceof Integer // Use Integer, not Hex!
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: device.currentValue("switch") == "on" ? "off" : "on")
     } catch (AssertionError e) {
         log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
@@ -729,13 +723,10 @@ void toggleOnOff( Map params = [:] ){
     }
 }
 
-
 //offWithEffect implements Matter 1.2 Cluster Spec Section 1.5.7.4, OffWithEffect command
-// Omission of a "component" version is intentional since it is not needed for legacy Generic Child driver support
-// child device drivers can directly call the named parameter function supplying its endpoint in the call.
 void offWithEffect( Map params = [:] ){
     try {
-        Map inputs = [ ep: getEndpointIdInt(device), effectIdentifier: 0, effectVariant:0] << params
+        Map inputs = [ ep: getEndpoint(device), effectIdentifier: 0, effectVariant:0] << params
         assert inputs.ep instanceof Integer // Use Integer, not Hex!
         assert inputs.effectIdentifier instanceof Integer && (0..1).contains(inputs.effectIdentifier)
         assert (inputs.effectVariant instanceof Integer)  && (0..2).contains(inputs.effectVariant )
@@ -746,14 +737,13 @@ void offWithEffect( Map params = [:] ){
 
         String cmd = matter.invoke(inputs.ep, 0x0006, 0x40, fields)
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "off")
     } catch (AssertionError e) {
         log.error "Incorrect parameter type or value used in offWithEffect() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
         log.error "<pre>${e}<br><br>when processing offWithEffect with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
-
-
 
 // Identify Cluster 0x0003 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
 @Field static Map IdentifyTypeEnum =   [ 0:"None",     1:"LightOutput",    2:"VisibleIndicator",    3:"AudibleBeep",    4:"Display",    5:"Actuator"] // Cluste 0x0003
