@@ -2,31 +2,18 @@ import com.hubitat.app.DeviceWrapper
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
-import java.security.MessageDigest
-import java.util.concurrent.ConcurrentHashMap
-import javax.crypto.spec.SecretKeySpec
-import javax.crypto.Cipher
-import javax.crypto.Mac
 import hubitat.helper.HexUtils
 import hubitat.scheduling.AsyncResponse
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
-import javax.crypto.spec.IvParameterSpec
 
 metadata {
-    definition(name: 'Tuya LAN Driver', namespace: 'tuya', author: 'Dan Abdinoor') {
+    definition(name: 'Tuya LAN Driver', namespace: 'tuya', author: 'Dan Abdinoor',
+               importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy') {
         capability "Switch"
         capability "Refresh"
         capability "Switch Level"
         capability "Change Level"
-        command "setPollInterval", [[
-            name: "Poll Interval in seconds",
-            constraints: ["default", "1 second", "5 seconds", "10 seconds",
-                          "15 seconds", "30 seconds", "1 minute", "5 minutes",
-                          "10 minutes", "30 minutes"],
-            type: "ENUM"]]
-        attribute "connection", "string"
-        attribute "commsError", "string"
         attribute "localKey", "string"
         attribute "host", "string"
         attribute "port", "string"
@@ -133,7 +120,7 @@ def setRelayState(onOff) {
     def gwId = getDataValue("gwId")
     def dps = onOff ? "true" : "false"
     def cmd = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":${dps}}}/$
-    sendCmd(cmd)
+    sendCmd(CONTROL, payload)
     sendEvent(name: "switch", value: (onOff) ? "on" : "off", type: "digital")
 }
 
@@ -212,7 +199,12 @@ def getAddress() {
  * Encoding methods
  */
 byte[] encodeMessage(int seqno, int cmd, String payload, byte[] localKey) {
-    byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), payload.getBytes())
+    byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), payload)
+
+    if (cmd == DP_QUERY) {
+        return packMessage(seqno, cmd, encrypted, localKey)
+    }
+
     byte[] versionHeader = createVersionHeader()
     packMessage(seqno, cmd, versionHeader, encrypted, localKey)
 }
@@ -231,19 +223,11 @@ byte[] createVersionHeader() {
 
 /* Pack all the bytes into a message that can be sent to device */
 byte[] packMessage(int seqno, int cmd, byte[] versionHeader, byte[] payload, byte[] localKey) {
-    int PREFIX_55AA_VALUE = 0x000055AA
-    int SUFFIX = 0x0000AA55
-
     // Calculate message length
     int msgLen = 15 + payload.length + 8
 
     // Create full message excluding CRC and suffix
     int bufferLen = (4 * 4) + versionHeader.length + 3 + payload.length // prefix, seqno, cmd, msgLen, header, payload
-
-    if (cmd == DP_QUERY) {
-        msgLen -= 15
-        bufferLen -= 15
-    }
 
     byte[] buffer = new byte[bufferLen]
     int pos = 0
@@ -264,15 +248,11 @@ byte[] packMessage(int seqno, int cmd, byte[] versionHeader, byte[] payload, byt
     writeIntToBuffer(buffer, pos, msgLen)
     pos += 4
 
-    if (cmd != DP_QUERY) {
-        // Write versionHeader manually
-        for (int i = 0; i < versionHeader.length; i++) {
-            buffer[pos++] = versionHeader[i]
-        }
-        pos = 31 // Pad remaining bytes up to position 31
-    } else {
-        pos = 16 // Pad remaining bytes up to position 16
+    // Write versionHeader manually
+    for (int i = 0; i < versionHeader.length; i++) {
+        buffer[pos++] = versionHeader[i]
     }
+    pos = 31 // Pad remaining bytes up to position 31
 
     // Write payload manually
     for (int i = 0; i < payload.length; i++) {
@@ -300,6 +280,61 @@ byte[] packMessage(int seqno, int cmd, byte[] versionHeader, byte[] payload, byt
     return finalBuffer
 }
 
+/* Pack all the bytes into a message that can be sent to device */
+byte[] packMessage(int seqno, int cmd, byte[] payload, byte[] localKey) {
+    int msgLen = payload.length + 8
+
+    // Create full message excluding CRC and suffix
+    int bufferLen = 0
+    bufferLen += Integer.BYTES * 4 // prefix, seqno, cmd, msglen
+    bufferLen += payload.length
+
+    byte[] buffer = new byte[bufferLen]
+    int pos = 0
+
+    // Write prefix
+    writeIntToBuffer(buffer, pos, PREFIX_55AA_VALUE)
+    pos += 4
+
+    // Write seqno
+    writeIntToBuffer(buffer, pos, seqno)
+    pos += 4
+
+    // Write cmd
+    writeIntToBuffer(buffer, pos, cmd)
+    pos += 4
+
+    // Write msgLen
+    writeIntToBuffer(buffer, pos, msgLen)
+    pos += 4
+
+    pos = 16 // Pad remaining bytes up to position 16
+
+    // Write payload manually
+    for (int i = 0; i < payload.length; i++) {
+        buffer[pos++] = payload[i]
+    }
+
+    // Calculate CRC on the buffer up to this point
+    Integer crc = calculateCRC32(buffer)
+
+    // Create final buffer with space for CRC and suffix
+    byte[] finalBuffer = new byte[pos + 4 + 4]
+
+    // Copy everything from the first buffer manually
+    for (int i = 0; i < pos; i++) {
+        finalBuffer[i] = buffer[i]
+    }
+
+    // Write CRC
+    writeIntToBuffer(finalBuffer, pos, crc)
+    pos += 4
+
+    // Write suffix
+    writeIntToBuffer(finalBuffer, pos, SUFFIX)
+
+    return finalBuffer
+}
 // Helper method to write an integer to a byte array at a given position
 void writeIntToBuffer(byte[] buffer, int pos, int value) {
     buffer[pos] = (byte) ((value >> 24) & 0xFF)
@@ -335,23 +370,45 @@ String bytesToHex(byte[] bytes) {
     return new String(hexChars);
 }
 
-/* encrypt the payload part of the message */
-byte[] encrypt(byte[] key, byte[] raw, boolean padded = true) {
-    if (padded) {
-        raw = pad(raw, 16)
-    }
 
-    // Create AES cipher instance in ECB mode
-    Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding")
+/* encrypt the payload part of the message */
+byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
+    // Create AES cipher instance in ECB mode
+    Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
     cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
+    byte[] plainBytes = plaintext.getBytes()
+    if (padded) {
+        //plainBytes = pad(plainBytes)
+    }
+
     // Perform encryption
-    cipher.doFinal(raw)
+    cipher.doFinal(plainBytes)
+}
+
+/* decrypt the payload part of the response */
+byte[] decrypt(byte[] key, byte[] encrypted, boolean padded = true) {
+    SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
+
+    // Create AES cipher instance in ECB mode PKCS5Padding
+    Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+    cipher.init(Cipher.DECRYPT_MODE, secretKey)
+
+    if (padded) {
+        // encrypted = pad(encrypted, 16)
+    }
+
+    // Perform decryption
+    cipher.doFinal(encrypted)
 }
 
 byte[] pad(byte[] data, int blockSize = 16) {
+    if (data.length % blockSize == 0) {
+        return data
+    }
+
     int paddingLength = blockSize - (data.length % blockSize)
     byte paddingByte = (byte) paddingLength
     byte[] paddedData = new byte[data.length + paddingLength]
@@ -367,6 +424,40 @@ byte[] pad(byte[] data, int blockSize = 16) {
     }
 
     return paddedData
+}
+
+/* Unpack the message received from a device */
+def unpackMessage(String received, byte[] localKey) {
+    byte[] decodedBytes = received.getBytes("ISO-8859-1")
+
+    // remove header, crc and suffix
+    int from = (5 * 8)
+    int to = decodedBytes.length - (2 * 8) - 1
+    byte[] payloadBytes = decodedBytes[from..to]
+    String payload = new String(payloadBytes, "ISO-8859-1")
+
+    // decrypt
+    payloadBytes = EncodingGroovyMethods.decodeHex(payload)
+    byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+    String decrypted = new String(decryptedBytes, "ISO-8859-1")
+    return decrypted
+}
+
+String decodeHost(String host) {
+    // Split the hex string into 4 octets (2 characters each)
+    StringBuilder sb = new StringBuilder(15)
+    sb.append(Integer.parseInt(host.substring(0, 2), 16))
+    sb.append(".")
+    sb.append(Integer.parseInt(host.substring(2, 4), 16))
+    sb.append(".")
+    sb.append(Integer.parseInt(host.substring(4, 6), 16))
+    sb.append(".")
+    sb.append(Integer.parseInt(host.substring(6, 8), 16))
+    sb.toString()
+}
+
+String decodePort(String port) {
+    Integer.parseInt(port.substring(0, 4), 16).toString()
 }
 
 @Field private final Map LOG = [
