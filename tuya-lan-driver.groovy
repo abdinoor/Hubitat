@@ -119,7 +119,7 @@ def setRelayState(onOff) {
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
     def dps = onOff ? "true" : "false"
-    def cmd = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":${dps}}}/$
+    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":${dps}}}/$
     sendCmd(CONTROL, payload)
     sendEvent(name: "switch", value: (onOff) ? "on" : "off", type: "digital")
 }
@@ -132,8 +132,8 @@ void setLevel(level, ramp = null, onTime = null ) {
     if (logEnable) log.debug "setLevel: [level: $level]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
-    def cmd = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
-    sendCmd(cmd)
+    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
+    sendCmd(CONTROL, payload)
     sendEvent(name: "level", value: level)
     sendEvent(name: "switch", value: "on")
 }
@@ -144,8 +144,6 @@ void refresh() {
     def timestamp = new Date().time.toString().substring(0, 10)
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}"}/$
     sendCmd(DP_QUERY, payload)
-    // sendEvent(name: "level", value: level)
-    // sendEvent(name: "switch", value: "on")
 }
 
 def sendCmd(int command, String payload) {
@@ -161,9 +159,13 @@ def sendCmd(int command, String payload) {
  * Communication methods
  */
 
-// callback from hubitat
+/* callback from hubitat */
 def parse(message) {
-    if (logEnable) log.debug "parse: ${message}"
+    if (logEnable) log.debug "parse: message: ${message}"
+    def jsonResponse = new JsonSlurper().parseText(message)
+    if (logEnable) log.debug "parse: jsonResponse: ${jsonResponse}"
+    // sendEvent(name: "level", value: level)
+    // sendEvent(name: "switch", value: "on")
     // return createEvent(name: "switch", value: "off")
 }
 
@@ -187,6 +189,7 @@ def sendLanCmd(int seqno, int command, String payload) {
     }
 }
 
+/* combine host IP address and port */
 def getAddress() {
     def ip = getDataValue("host")
     if (ip == null) log.warn "No IP address set for ${device}"
@@ -372,7 +375,7 @@ String bytesToHex(byte[] bytes) {
 
 
 /* encrypt the payload part of the message */
-byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
+byte[] encrypt(byte[] key, String plaintext) {
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
     // Create AES cipher instance in ECB mode
@@ -380,25 +383,18 @@ byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
     cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
     byte[] plainBytes = plaintext.getBytes()
-    if (padded) {
-        //plainBytes = pad(plainBytes)
-    }
 
     // Perform encryption
     cipher.doFinal(plainBytes)
 }
 
 /* decrypt the payload part of the response */
-byte[] decrypt(byte[] key, byte[] encrypted, boolean padded = true) {
+byte[] decrypt(byte[] key, byte[] encrypted) {
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
     // Create AES cipher instance in ECB mode PKCS5Padding
     Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
     cipher.init(Cipher.DECRYPT_MODE, secretKey)
-
-    if (padded) {
-        // encrypted = pad(encrypted, 16)
-    }
 
     // Perform decryption
     cipher.doFinal(encrypted)
