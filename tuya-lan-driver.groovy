@@ -6,6 +6,7 @@ import hubitat.helper.HexUtils
 import hubitat.scheduling.AsyncResponse
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
+import org.codehaus.groovy.runtime.EncodingGroovyMethods
 
 metadata {
     definition(name: 'Tuya LAN Driver', namespace: 'tuya', author: 'Dan Abdinoor',
@@ -161,11 +162,40 @@ def sendCmd(int command, String payload) {
 
 /* callback from hubitat */
 def parse(message) {
-    if (logEnable) log.debug "parse: message: ${message}"
-    def jsonResponse = new JsonSlurper().parseText(message)
-    if (logEnable) log.debug "parse: jsonResponse: ${jsonResponse}"
-    // sendEvent(name: "level", value: level)
-    // sendEvent(name: "switch", value: "on")
+    String field = "payload:"
+    int loc = message.indexOf(field) + field.length()
+    String payload = message.substring(loc, message.length())
+
+    byte[] decoded = payload.decodeBase64()
+    String hex = new String(decoded, "ISO-8859-1")
+
+    loc = hex.indexOf("000055AA", 8)
+    if (loc > 0) {
+        hex = hex.substring(loc, hex.length())
+    }
+
+    payload = unpackMessage(hex, getDataValue("localKey").getBytes())
+    if (logEnable) log.debug "parse: ${payload}"
+
+    def response = new JsonSlurper().parseText(payload)
+    def onOff
+    def status
+    def level
+    if (response.dps['1']) {
+        onOff = response.dps['1']
+        status = (onOff) ? "on" : "off"
+        sendEvent(name: "switch", value: status)
+    }
+    if (response.dps['7']) {
+        level = response.dps['7']
+        sendEvent(name: "level", value: level)
+    }
+
+    field = "ip:"
+    loc = message.indexOf(field) + field.length()
+    String host = decodeHost(message.substring(loc, loc + 8))
+    if (logEnable) log.debug "${host} [switch:${status}, level:${level}]"
+
     // return createEvent(name: "switch", value: "off")
 }
 
@@ -426,14 +456,24 @@ byte[] pad(byte[] data, int blockSize = 16) {
 }
 
 /* Unpack the message received from a device */
-def unpackMessage(String received, byte[] localKey) {
+String unpackMessage(String received, byte[] localKey) {
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
 
     // remove header, crc and suffix
     int from = (5 * 8)
     int to = decodedBytes.length - (2 * 8) - 1
     byte[] payloadBytes = decodedBytes[from..to]
+
+    // if version header is present then remove it
+    if (payloadBytes[0] == 0x33) {
+        // 332e32000000000000000000000000
+        from = 30
+        to = payloadBytes.length - 1
+        payloadBytes = payloadBytes[from..to]
+    }
+
     String payload = new String(payloadBytes, "ISO-8859-1")
+    // logger.info "payload: ${payload} is ${payloadBytes.length}"
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)

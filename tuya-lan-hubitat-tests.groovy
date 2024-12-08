@@ -7,6 +7,7 @@ import javax.crypto.spec.SecretKeySpec
 import groovy.test.GroovyTestCase
 import java.util.logging.Logger
 import java.util.logging.Level
+import groovy.json.JsonSlurper
 
 
 class EncryptTest extends GroovyTestCase {
@@ -17,6 +18,8 @@ class EncryptTest extends GroovyTestCase {
     static final int DP_QUERY            = 0x0a
     static final int PREFIX_55AA_VALUE   = 0x000055AA
     static final int SUFFIX              = 0x0000AA55
+    static final int HEADER              = 0x33
+
 
     public void testEncrypt() {
         def cmd = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1732927690","dps":{"1":false}}/
@@ -185,17 +188,38 @@ class EncryptTest extends GroovyTestCase {
     }
 
     public void testParseMessage() {
-        String message = "index:00, mac:D8D668400385, ip:c0a805bd, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDEzNTkzNEE0Rjk5Nzg2NTJDNkI4Nzc0OTc2MjkxMzNFOTJFNTYwREY2Q0ZCOUQ4MjQwNTNCNzAwRDAxQjRGOEUwRkEwMjJCNjA5OEJDQjIyOTMzMzhDNDFDRDU1Rjk3MUQwRTZBMDc4ODAzMjkwQTI1OEU0OTZCMUUyNjQxQUVENEU3QkM5NzAwMDAwQUE1NQ=="
+        String message = "index:00, mac:D8D668400385, ip:c0a805bd, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDA3MDAwMDAwMEMwMDAwMDAwMEE1MDVBOTE0MDAwMEFBNTUwMDAwNTVBQTAwMDAwMDAwMDAwMDAwMDgwMDAwMDA0QjAwMDAwMDAwMzMyRTMzMDAwMDAwMDAwMDAwNzdBMzAwMDAwMDAxQ0QwRUVDM0E2MTEwMTQ4NjJCOENBMTE1RUE3NjJGNThENjkwQkE2RkNFQ0E5Mzk2OUMyQjNEQzU0NDVFRUIwMEQ0QkExRjBDRjgzRTFEMUU0QTAwRUJDMTY2RkEzN0VGMzQ2MUIxNDMwMDAwQUE1NQ=="
 
         String field = "payload:"
         int loc = message.indexOf(field) + field.length()
         String payload = message.substring(loc, message.length())
 
-        String expected = "000055AA000000010000000A0000004C00000000135934A4F9978652C6B877497629133E92E560DF6CFB9D824053B700D01B4F8E0FA022B6098BCB2293338C41CD55F971D0E6A078803290A258E496B1E2641AED4E7BC9700000AA55"
+        String expected = "MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDA3MDAwMDAwMEMwMDAwMDAwMEE1MDVBOTE0MDAwMEFBNTUwMDAwNTVBQTAwMDAwMDAwMDAwMDAwMDgwMDAwMDA0QjAwMDAwMDAwMzMyRTMzMDAwMDAwMDAwMDAwNzdBMzAwMDAwMDAxQ0QwRUVDM0E2MTEwMTQ4NjJCOENBMTE1RUE3NjJGNThENjkwQkE2RkNFQ0E5Mzk2OUMyQjNEQzU0NDVFRUIwMEQ0QkExRjBDRjgzRTFEMUU0QTAwRUJDMTY2RkEzN0VGMzQ2MUIxNDMwMDAwQUE1NQ=="
+        assertEquals(expected, payload)
+
 
         byte[] decoded = payload.decodeBase64()
         String hex = new String(decoded, "ISO-8859-1")
+
+        expected = "000055AA00000001000000070000000C00000000A505A9140000AA55000055AA00000000000000080000004B00000000332E3300000000000077A300000001CD0EEC3A611014862B8CA115EA762F58D690BA6FCECA93969C2B3DC5445EEB00D4BA1F0CF83E1D1E4A00EBC166FA37EF3461B1430000AA55"
         assertEquals(expected, hex)
+
+        loc = hex.indexOf("000055AA", 8)
+        hex = hex.substring(loc, hex.length())
+
+        expected = "000055AA00000000000000080000004B00000000332E3300000000000077A300000001CD0EEC3A611014862B8CA115EA762F58D690BA6FCECA93969C2B3DC5445EEB00D4BA1F0CF83E1D1E4A00EBC166FA37EF3461B1430000AA55"
+        assertEquals(expected, hex)
+
+        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+        payload = unpackMessage(hex, localKey)
+        // logger.info payload
+        expected = '{"dps":{"1":true},"t":1733625177}'
+        assertEquals(expected, payload)
+
+        def response = new JsonSlurper().parseText(payload)
+        // logger.info "${response.dps}"
+        boolean onOff = response.dps['1']
+        boolean level = response.dps['7']
     }
 
 
@@ -220,6 +244,7 @@ class EncryptTest extends GroovyTestCase {
         state.lastCommand = payload
         sendLanCmd(seqno, command, payload)
     }
+
 
     /* -------------------------------------------------------
      * Communication methods
@@ -440,7 +465,7 @@ String bytesToHex(byte[] bytes) {
 
 
 /* encrypt the payload part of the message */
-byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
+byte[] encrypt(byte[] key, String plaintext) {
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
     // Create AES cipher instance in ECB mode
@@ -448,25 +473,21 @@ byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
     cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
     byte[] plainBytes = plaintext.getBytes()
-    if (padded) {
-        //plainBytes = pad(plainBytes)
-    }
+    // plainBytes = pad(plainBytes)
 
     // Perform encryption
     cipher.doFinal(plainBytes)
 }
 
 /* decrypt the payload part of the response */
-byte[] decrypt(byte[] key, byte[] encrypted, boolean padded = true) {
+byte[] decrypt(byte[] key, byte[] encrypted) {
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
     // Create AES cipher instance in ECB mode PKCS5Padding
     Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
     cipher.init(Cipher.DECRYPT_MODE, secretKey)
 
-    if (padded) {
-        // encrypted = pad(encrypted, 16)
-    }
+    // encrypted = pad(encrypted, 16)
 
     // Perform decryption
     cipher.doFinal(encrypted)
@@ -495,14 +516,24 @@ byte[] pad(byte[] data, int blockSize = 16) {
 }
 
 /* Unpack the message received from a device */
-def unpackMessage(String received, byte[] localKey) {
+String unpackMessage(String received, byte[] localKey) {
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
 
     // remove header, crc and suffix
     int from = (5 * 8)
     int to = decodedBytes.length - (2 * 8) - 1
     byte[] payloadBytes = decodedBytes[from..to]
+
+    // if version header is present then remove it
+    if (payloadBytes[0] == 0x33) {
+        // 332e32000000000000000000000000
+        from = 30
+        to = payloadBytes.length - 1
+        payloadBytes = payloadBytes[from..to]
+    }
+
     String payload = new String(payloadBytes, "ISO-8859-1")
+    // logger.info "payload: ${payload} is ${payloadBytes.length}"
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)
