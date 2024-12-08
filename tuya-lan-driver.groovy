@@ -180,7 +180,10 @@ def sendLanCmd(int seqno, int command, String payload) {
         [
             destinationAddress: getAddress(),
             type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
-            encoding: hubitat.device.HubAction.Encoding.HEX_STRING
+            encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
+            timeout: 300,
+            parseWarning: true,
+            ignoreResponse: false
         ])
     try {
         sendHubCommand(myHubAction)
