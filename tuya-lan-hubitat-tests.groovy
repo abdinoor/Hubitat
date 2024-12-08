@@ -184,6 +184,20 @@ class EncryptTest extends GroovyTestCase {
         assertEquals(expected, payload)
     }
 
+    public void testParseMessage() {
+        String message = "index:00, mac:D8D668400385, ip:c0a805bd, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDEzNTkzNEE0Rjk5Nzg2NTJDNkI4Nzc0OTc2MjkxMzNFOTJFNTYwREY2Q0ZCOUQ4MjQwNTNCNzAwRDAxQjRGOEUwRkEwMjJCNjA5OEJDQjIyOTMzMzhDNDFDRDU1Rjk3MUQwRTZBMDc4ODAzMjkwQTI1OEU0OTZCMUUyNjQxQUVENEU3QkM5NzAwMDAwQUE1NQ=="
+
+        String field = "payload:"
+        int loc = message.indexOf(field) + field.length()
+        String payload = message.substring(loc, message.length())
+
+        String expected = "000055AA000000010000000A0000004C00000000135934A4F9978652C6B877497629133E92E560DF6CFB9D824053B700D01B4F8E0FA022B6098BCB2293338C41CD55F971D0E6A078803290A258E496B1E2641AED4E7BC9700000AA55"
+
+        byte[] decoded = payload.decodeBase64()
+        String hex = new String(decoded, "ISO-8859-1")
+        assertEquals(expected, hex)
+    }
+
 
     /* -------------------------------------------------------
      * Helper methods
