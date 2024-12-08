@@ -20,7 +20,6 @@ class EncryptTest extends GroovyTestCase {
     static final int SUFFIX              = 0x0000AA55
     static final int HEADER              = 0x33
 
-
     public void testEncrypt() {
         def cmd = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1732927690","dps":{"1":false}}/
 
@@ -219,7 +218,7 @@ class EncryptTest extends GroovyTestCase {
         def response = new JsonSlurper().parseText(payload)
         // logger.info "${response.dps}"
         boolean onOff = response.dps['1']
-        boolean level = response.dps['7']
+        assertTrue(onOff)
     }
 
 

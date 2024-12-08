@@ -177,17 +177,18 @@ def parse(message) {
     payload = unpackMessage(hex, getDataValue("localKey").getBytes())
     if (logEnable) log.debug "parse: ${payload}"
 
+    // handle the incoming data points (DPs)
     def response = new JsonSlurper().parseText(payload)
     def onOff
     def status
     def level
-    if (response.dps['1']) {
+    if (response.dps['1'] != null) {
         onOff = response.dps['1']
         status = (onOff) ? "on" : "off"
         sendEvent(name: "switch", value: status)
     }
-    if (response.dps['7']) {
-        level = response.dps['7']
+    if (response.dps['2'] != null) {
+        level = (int) (response.dps['2'] / 10)
         sendEvent(name: "level", value: level)
     }
 
