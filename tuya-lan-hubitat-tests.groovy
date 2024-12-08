@@ -221,6 +221,30 @@ class EncryptTest extends GroovyTestCase {
         assertTrue(onOff)
     }
 
+    public void testHeaderErrorParse(){
+        // this looks like it has a header but does not
+        String hex = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC330182AB78D7BAE9AA1CB8F75FDF72C7E492528E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E4997394B4DD9C390000AA55"
+
+        int loc = hex.indexOf("000055AA", 8)
+        if (loc > 0) {
+            hex = hex.substring(loc, hex.length())
+        }
+
+        String expected = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC330182AB78D7BAE9AA1CB8F75FDF72C7E492528E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E4997394B4DD9C390000AA55"
+        assertEquals(expected, hex)
+
+        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
+        String payload = unpackMessage(hex, localKey)
+        // logger.info payload
+        expected = '{"dps":{"1":true,"2":620,"3":100,"4":"LED","102":0,"104":1}}'
+        assertEquals(expected, payload)
+
+        def response = new JsonSlurper().parseText(payload)
+        // logger.info "${response.dps}"
+        boolean onOff = response.dps['1']
+        assertTrue(onOff)
+    }
+
 
     /* -------------------------------------------------------
      * Helper methods
@@ -516,6 +540,7 @@ byte[] pad(byte[] data, int blockSize = 16) {
 
 /* Unpack the message received from a device */
 String unpackMessage(String received, byte[] localKey) {
+    // logger.info "received: ${received} is ${received.length()}"
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
 
     // remove header, crc and suffix
@@ -524,7 +549,7 @@ String unpackMessage(String received, byte[] localKey) {
     byte[] payloadBytes = decodedBytes[from..to]
 
     // if version header is present then remove it
-    if (payloadBytes[0] == 0x33) {
+    if (payloadBytes[0] == 0x33 && payloadBytes.length % 16 != 0) {
         // 332e32000000000000000000000000
         from = 30
         to = payloadBytes.length - 1
@@ -536,8 +561,10 @@ String unpackMessage(String received, byte[] localKey) {
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)
+    // logger.info "payload: ${payloadBytes} is ${payloadBytes.length}"
     byte[] decryptedBytes = decrypt(localKey, payloadBytes)
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
+    // logger.info "decrypted: ${decrypted} is ${decrypted.length()}"
     return decrypted
 }
 

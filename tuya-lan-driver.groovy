@@ -171,7 +171,7 @@ def parse(message) {
     try {
         updateStatus(message)
     } catch (e) {
-        log.exception('parse error', e)
+        LOG.exception('parse error', e)
     }
 }
 
@@ -193,10 +193,10 @@ def updateStatus(message) {
     loc = message.indexOf(field) + field.length()
     String payload = message.substring(loc, message.length())
 
-    byte[] decoded = payload.decodeBase64()
+    byte[] decoded = payload?.decodeBase64()
     String hex = new String(decoded, "ISO-8859-1")
 
-    loc = hex.indexOf("000055AA", 8)
+    loc = hex?.indexOf("000055AA", 8)
     if (loc > 0) {
         hex = hex.substring(loc, hex.length())
     }
@@ -488,7 +488,12 @@ byte[] pad(byte[] data, int blockSize = 16) {
 
 /* Unpack the message received from a device */
 String unpackMessage(String received, byte[] localKey) {
+    if (received == null) {
+        return null
+    }
+
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
+    LOG.debug "unpackMessage: gwId:${getDataValue("gwId")} received:${received} len:${decodedBytes?.length}"
 
     // remove header, crc and suffix
     int from = (5 * 8)
@@ -496,7 +501,7 @@ String unpackMessage(String received, byte[] localKey) {
     byte[] payloadBytes = decodedBytes[from..to]
 
     // if version header is present then remove it
-    if (payloadBytes[0] == 0x33) {
+    if (payloadBytes[0] == 0x33 && payloadBytes.length % 16 != 0) {
         // 332e32000000000000000000000000
         from = 30
         to = payloadBytes.length - 1
@@ -504,7 +509,6 @@ String unpackMessage(String received, byte[] localKey) {
     }
 
     String payload = new String(payloadBytes, "ISO-8859-1")
-    // logger.info "payload: ${payload} is ${payloadBytes.length}"
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)
