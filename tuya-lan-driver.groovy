@@ -86,25 +86,25 @@ def installed() {
 def updated() {
     def updStatus = [:]
 
-    updateDataValue("localKey", localKey)
-    sendEvent(name: "localKey", value: localKey)
-    updStatus << [localKey: localKey]
-
     updateDataValue("gwId", gwId)
-    sendEvent(name: "gwId", value: gwId)
     updStatus << [gwId: gwId]
 
+    updateDataValue("localKey", localKey)
+    updStatus << [localKey: localKey]
+
     updateDataValue("host", host)
-    sendEvent(name: "host", value: host)
     updStatus << [host: host]
 
     updateDataValue("port", port)
-    sendEvent(name: "port", value: port)
     updStatus << [port: port]
 
-    if (logEnable) log.debug updStatus
+    updateDataValue("pollRefresh", pollRefresh.toString())
+    updStatus << [pollRefresh: pollRefresh]
+    runIn(getRefreshSeconds(), poll)
 
-    // refresh()
+    if (logEnable) log.debug "updated: ${updStatus}"
+
+    refresh()
 }
 
 def on() {
@@ -147,6 +147,11 @@ void refresh() {
     sendCmd(DP_QUERY, payload)
 }
 
+def poll() {
+    runIn(getRefreshSeconds(), poll)
+    refresh()
+}
+
 def sendCmd(int command, String payload) {
     int seqno = 1
     if (state.seqno != null) {
@@ -162,8 +167,30 @@ def sendCmd(int command, String payload) {
 
 /* callback from hubitat */
 def parse(message) {
-    String field = "payload:"
+    if (logEnable) log.debug "parse: ${message}"
+    try {
+        updateStatus(message)
+    } catch (e) {
+        log.exception('parse error', e)
+    }
+}
+
+/* take an encoded message, extract datapoints and update status */
+def updateStatus(message) {
+    if (message == null) {
+        return
+    }
+
+    def updStatus = [:]
+    updStatus << [gwId: getDataValue("gwId")]
+
+    String field = "ip:"
     int loc = message.indexOf(field) + field.length()
+    String host = decodeHost(message.substring(loc, loc + 8))
+    updStatus << [host: host]
+
+    field = "payload:"
+    loc = message.indexOf(field) + field.length()
     String payload = message.substring(loc, message.length())
 
     byte[] decoded = payload.decodeBase64()
@@ -175,7 +202,6 @@ def parse(message) {
     }
 
     payload = unpackMessage(hex, getDataValue("localKey").getBytes())
-    if (logEnable) log.debug "parse: ${payload}"
 
     // handle the incoming data points (DPs)
     def response = new JsonSlurper().parseText(payload)
@@ -186,18 +212,15 @@ def parse(message) {
         onOff = response.dps['1']
         status = (onOff) ? "on" : "off"
         sendEvent(name: "switch", value: status)
+        updStatus << ['switch': status]
     }
     if (response.dps['2'] != null) {
         level = (int) (response.dps['2'] / 10)
         sendEvent(name: "level", value: level)
+        updStatus << [level: level]
     }
 
-    field = "ip:"
-    loc = message.indexOf(field) + field.length()
-    String host = decodeHost(message.substring(loc, loc + 8))
-    if (logEnable) log.debug "${host} [switch:${status}, level:${level}]"
-
-    // return createEvent(name: "switch", value: "off")
+    if (logEnable) log.debug updStatus
 }
 
 def sendLanCmd(int seqno, int command, String payload) {
@@ -229,6 +252,13 @@ def getAddress() {
     if (ip == null) log.warn "No IP address set for ${device}"
     def port = getDataValue("port")
     return "${ip}:${port}"
+}
+
+/* get refresh rate or a default */
+def getRefreshSeconds() {
+    def seconds = getDataValue("pollRefresh")
+    if (seconds == null) return 300
+    return Integer.parseInt(getDataValue("pollRefresh"))
 }
 
 
