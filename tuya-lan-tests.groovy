@@ -1,5 +1,6 @@
 import java.nio.ByteBuffer
 import java.util.zip.CRC32
+import java.util.Base64
 
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
@@ -7,6 +8,7 @@ import javax.crypto.spec.SecretKeySpec
 import groovy.test.GroovyTestCase
 import java.util.logging.Logger
 import java.util.logging.Level
+import org.codehaus.groovy.runtime.EncodingGroovyMethods
 
 
 class EncryptTest extends GroovyTestCase {
@@ -23,7 +25,7 @@ class EncryptTest extends GroovyTestCase {
 
         byte[] expected = [115, 88, 121, 233, 43, 77, 79, 35, 5, 114, 28, 184, 82, 139, 46, 43, 57, 173, 3, 114, 118, 116, 81, 137, 200, 51, 173, 140, 95, 221, 165, 178, 31, 232, 212, 171, 116, 4, 126, 111, 168, 166, 94, 50, 184, 12, 181, 201, 136, 94, 140, 240, 179, 40, 2, 36, 240, 81, 208, 217, 198, 128, 246, 114, 238, 197, 199, 205, 164, 128, 5, 116, 195, 123, 99, 168, 172, 236, 35, 136, 157, 202, 136, 13, 53, 198, 30, 128, 46, 165, 60, 175, 72, 108, 218, 254, 16, 248, 235, 75, 210, 216, 200, 160, 126, 228, 225, 17, 179, 97, 176, 179]
 
-        byte[] encrypted = encrypt(getDataValue("api_key").getBytes(), cmd.getBytes())
+        byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), cmd)
 
         for(int i = 0; i < encrypted.length; i++)
         {
@@ -49,7 +51,7 @@ class EncryptTest extends GroovyTestCase {
     }
 
     public void testPackMessage() {
-        def localKey = getDataValue("api_key").getBytes()
+        def localKey = getDataValue("localKey").getBytes()
 
         byte[] encrypted = [115, 88, 121, 233, 43, 77, 79, 35, 5, 114, 28, 184, 82, 139, 46, 43, 57, 173, 3, 114, 118, 116, 81, 137, 200, 51, 173, 140, 95, 221, 165, 178, 31, 232, 212, 171, 116, 4, 126, 111, 168, 166, 94, 50, 184, 12, 181, 201, 136, 94, 140, 240, 179, 40, 2, 36, 240, 81, 208, 217, 198, 128, 246, 114, 238, 197, 199, 205, 164, 128, 5, 116, 195, 123, 99, 168, 172, 236, 35, 136, 157, 202, 136, 13, 53, 198, 30, 128, 46, 165, 60, 175, 72, 108, 218, 254, 16, 248, 235, 75, 210, 216, 200, 160, 126, 228, 225, 17, 179, 97, 176, 179]
 
@@ -65,7 +67,6 @@ class EncryptTest extends GroovyTestCase {
             assertEquals(a, b)
         }
     }
-
 
     public void testSendLanCmdOn() {
         def payload = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1733026274","dps":{"1":true}}/
@@ -106,6 +107,85 @@ class EncryptTest extends GroovyTestCase {
         assertEquals(expected, hex)
     }
 
+    public void testDecodePayload() {
+        def response = [
+            payload:"MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDRBMkY4NDU5QUE5REFCREY4MjVBMkY3QkZERkUwODUyNzQwMzY3Q0Q4NDI3OTRERjNBNTY3QUMyMTU2RTJCM0YyQ0E1QjUzMjJCQjVENjczNjNCOEMyOThFODZCMDBCQjExRTdGMDA2OUIyQzgwODU1NzJDNzg0NkM1QTNEMDU1NkE5QTJCNjUwMDAwQUE1NQ==",
+        ]
+
+        String expected = "000055AA000000010000000A0000004C000000004A2F8459AA9DABDF825A2F7BFDFE0852740367CD842794DF3A567AC2156E2B3F2CA5B5322BB5D67363B8C298E86B00BB11E7F0069B2C8085572C7846C5A3D0556A9A2B650000AA55"
+
+        byte[] decodedBytes = Base64.getDecoder().decode(response.payload)
+        StringBuilder byteString = new StringBuilder();
+        for (byte b : decodedBytes) {
+            // Convert each byte to its character representation
+            byteString.append((char) b);
+        }
+
+        String received = byteString.toString()
+        assertEquals(expected, byteString.toString())
+    }
+
+    public void testDecodeAddress() {
+        def response = [
+            ip:'c0a805ca',
+            port:'1a0c',
+        ]
+        assertEquals("192.168.5.202", decodeHost(response.ip))
+        assertEquals("6668", decodePort(response.port))
+    }
+
+    public void testDecryptPayload() {
+        String expected = '{"dps":{"1":false,"7":0},"type":"query","t":1733494551}'
+        //  'ebaa0ec75b92164f67nc2a', address='192.168.5.202', local_key='9MZ4>xi7oPL?MCUf'
+        //                                                       332e32000000000000000000000000
+        //def response1 = "4a2f8459aa9dabdf825a2f7bfdfe0852740367cd842794df3a567ac2156e2b3f2ca5b5322bb5d67363b8c298e86b00bba0cc0160aa7608b4c96bcf7b611f7a00b163aa76f49fa2589e93cb0e33bf2476bf328be88b6ed89abb6fe84400751f03"
+        //byte[] payloadBytes = response1.getBytes("ISO-8859-1")
+
+        byte[] payloadBytes = new byte[] {
+            0x4A, 0x2F, (byte) 0x84, 0x59, (byte) 0xAA, (byte) 0x9D, (byte) 0xAB, (byte) 0xDF,
+            (byte) 0x82, 0x5A, 0x2F, 0x7B, (byte) 0xFD, (byte) 0xFE, 0x08, 0x52,
+            (byte) 0xEC, (byte) 0x91, 0x42, 0x30, 0x73, (byte) 0x87, 0x10, 0x4C,
+            0x0D, 0x5E, 0x1D, (byte) 0xD1, (byte) 0xFD, (byte) 0xA7, (byte) 0xDB, (byte) 0x9E,
+            (byte) 0xB4, (byte) 0x81, (byte) 0x8C, 0x1C, (byte) 0xC1, (byte) 0xF7, (byte) 0xDE, 0x54,
+            (byte) 0x91, (byte) 0xD2, (byte) 0xCB, 0x21, (byte) 0xCE, (byte) 0xC2, 0x01, 0x1D,
+            (byte) 0xF3, 0x09, 0x4D, (byte) 0x97, 0x39, (byte) 0xDC, 0x17, 0x42,
+            0x3C, (byte) 0xE3, (byte) 0xDE, 0x37, 0x5B, 0x79, (byte) 0xCA, (byte) 0x9E
+        }
+
+        // logger.info "payloadBytes is ${payloadBytes.length} bytes"
+
+        def localKey = "9MZ4>xi7oPL?MCUf".getBytes()
+        byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+        String payload = new String(decryptedBytes, "ISO-8859-1")
+        assertEquals(payload, expected)
+    }
+
+    public void testUnpackPayload() {
+        String received = "000055aa000000050000000a0000004c00000000135934a4f9978652c6b877497629133e92e560df6cfb9d824053b700d01b4f8e0fa022b6098bcb2293338c41cd55f971d0e6a078803290a258e496b1e2641aedff24b99a0000aa55"
+        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+        String payload = unpackMessage(received, localKey)
+        String expected = '{"dps":{"1":false,"7":0,"14":"off","15":"none","18":""}}'
+        assertEquals(expected, payload)
+    }
+
+    public void testDecrypt() {
+        String expected = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1732927690","dps":{"1":false}}/
+        // logger.info "expected array: ${expected.getBytes()}"
+
+        byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), expected)
+        // logger.info "enc string: ${new String(encrypted, "ISO-8859-1")}"
+        // logger.info "enc array: ${encrypted.toString()}"
+        // logger.info "enc string: ${encrypted.length}"
+
+        byte[] decrypted = decrypt(getDataValue("localKey").getBytes(), encrypted)
+        // logger.info "decrypted array: ${decrypted.toString()}"
+        String payload = new String(decrypted, "ISO-8859-1")
+        // logger.info "decrypted string: ${payload}"
+        // logger.info "decrypted string: ${decrypted.length}"
+
+        assertEquals(expected, payload)
+    }
+
     /* -------------------------------------------------------
      * Helper methods
      */
@@ -132,10 +212,10 @@ class EncryptTest extends GroovyTestCase {
      */
 
     def sendLanCmd(int seqno, int cmd, String payload) {
-        logger.info "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
+        // logger.info "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
 
-        byte[] message = encodeMessage(seqno, cmd, payload, getDataValue("api_key").getBytes())
-        logger.info payload
+        byte[] message = encodeMessage(seqno, cmd, payload, getDataValue("localKey").getBytes())
+        // logger.info payload
 
         return message
 
@@ -160,7 +240,7 @@ class EncryptTest extends GroovyTestCase {
     def getDataValue(String name) {
         if (name == "host") return "192.168.5.189"
         if (name == "port") return "6668"
-        if (name == "api_key") return "X8#rf#xRr1dw)Bbn"
+        if (name == "localKey") return "X8#rf#xRr1dw)Bbn"
         throw new Exception('no data value')
     }
 
@@ -172,7 +252,7 @@ class EncryptTest extends GroovyTestCase {
     }
 
     byte[] encodeMessage(int seqno, int cmd, String payload, byte[] localKey) {
-        byte[] encrypted = encrypt(getDataValue("api_key").getBytes(), payload.getBytes())
+        byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), payload)
 
         if (cmd == DP_QUERY) {
             return packMessage(seqno, cmd, encrypted, localKey)
@@ -196,9 +276,6 @@ class EncryptTest extends GroovyTestCase {
 
     /* Pack all the bytes into a message that can be sent to device */
     byte[] packMessage(int seqno, int cmd, byte[] versionHeader, byte[] payload, byte[] localKey) {
-        int PREFIX_55AA_VALUE = 0x000055AA
-        int SUFFIX = 0x0000AA55
-
         int msgLen = 15 + payload.length + 8
 
         // Create full message excluding CRC and suffix
@@ -239,16 +316,12 @@ class EncryptTest extends GroovyTestCase {
 
     /* Pack all the bytes into a message that can be sent to device */
     byte[] packMessage(int seqno, int cmd, byte[] payload, byte[] localKey) {
-        int PREFIX_55AA_VALUE = 0x000055AA
-        int SUFFIX = 0x0000AA55
-
         int msgLen = payload.length + 8
 
         // Create full message excluding CRC and suffix
         int bufferLen = 0
         bufferLen += Integer.BYTES * 4 // prefix, seqno, cmd, msglen
         bufferLen += payload.length
-
 
         ByteBuffer buffer = ByteBuffer.allocate(bufferLen)
         buffer.putInt(PREFIX_55AA_VALUE)
@@ -259,7 +332,7 @@ class EncryptTest extends GroovyTestCase {
         // move position forward
         buffer.position(16)
         buffer.put(payload)
-        logger.info buffer.array().toString()
+        // logger.info buffer.array().toString()
 
         // create CRC hash on buffer up to this point then create new buffer
         Integer crc = calculateCRC32(buffer.array())
@@ -271,13 +344,13 @@ class EncryptTest extends GroovyTestCase {
 
         // copy everything from pre-CRC buffer
         buffer2.put(buffer.array())
-        logger.info buffer2.array().toString()
+        // logger.info buffer2.array().toString()
 
         // add CRC and suffix
         buffer2.putInt(crc)
-        logger.info buffer2.array().toString()
+        // logger.info buffer2.array().toString()
         buffer2.putInt(SUFFIX)
-        logger.info buffer2.array().toString()
+        // logger.info buffer2.array().toString()
 
         return buffer2.array()
     }
@@ -286,8 +359,25 @@ class EncryptTest extends GroovyTestCase {
         CRC32 crc = new CRC32()
         crc.update(buffer)
         def value = crc.getValue()
-        logger.info value.toString()
+        // logger.info value.toString()
         return (Integer) value & 0xFFFFFFFF
+    }
+
+    /* Unpack the message received from a device */
+    def unpackMessage(String received, byte[] localKey) {
+        byte[] decodedBytes = received.getBytes("ISO-8859-1")
+
+        // remove header, crc and suffix
+        int from = (5 * 8)
+        int to = decodedBytes.length - (2 * 8) - 1
+        byte[] payloadBytes = decodedBytes[from..to]
+        String payload = new String(payloadBytes, "ISO-8859-1")
+
+        // decrypt
+        payloadBytes = EncodingGroovyMethods.decodeHex(payload)
+        byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+        String decrypted = new String(decryptedBytes, "ISO-8859-1")
+        return decrypted
     }
 
     char[] HEX_ARRAY = "0123456789abcdef".toCharArray();
@@ -301,30 +391,56 @@ class EncryptTest extends GroovyTestCase {
         return new String(hexChars);
     }
 
-    /* encrypt the payload part of the message */
-    byte[] encrypt(byte[] key, byte[] raw, boolean padded = true) {
-        // logger.info $/raw: ${new String(raw, "ISO-8859-1")}/$
+    /* Convert unsigned bytes to signed bytes array */
+    byte[] unsignedToSigned(byte[] unsignedBytes) {
+        byte[] converted = unsignedBytes.collect { (byte) it }
+        return converted
+    }
 
-        if (padded) {
-            raw = pad(raw, 16)
-        }
+    /* Convert unsigned bytes to signed bytes array */
+    byte[] signedToUnsigned(byte[] signedBytes) {
+        byte[] converted = signedBytes.collect { it & 0xFF }
+        return converted
+    }
+
+    /* encrypt the payload part of the message */
+    byte[] encrypt(byte[] key, String plaintext, boolean padded = true) {
+        SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
         // Create AES cipher instance in ECB mode
-        Cipher cipher = Cipher.getInstance("AES/ECB/NoPadding")
-        SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
-        // logger.info $/key: ${new String(key, "ISO-8859-1")}/$
-
+        Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
         cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
-        // Perform encryption
-        byte[] cryptedText = cipher.doFinal(raw)
-        // logger.info $/cryptedText: ${cryptedText}/$
-        // logger.info $/cryptedText len: ${cryptedText.length}/$
+        byte[] plainBytes = plaintext.getBytes()
+        if (padded) {
+            //plainBytes = pad(plainBytes)
+        }
 
-        return cryptedText
+        // Perform encryption
+        cipher.doFinal(plainBytes)
+    }
+
+    /* decrypt the payload part of the response */
+    byte[] decrypt(byte[] key, byte[] encrypted, boolean padded = true) {
+        SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
+
+        // Create AES cipher instance in ECB mode PKCS5Padding
+        Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
+        cipher.init(Cipher.DECRYPT_MODE, secretKey)
+
+        if (padded) {
+            // encrypted = pad(encrypted, 16)
+        }
+
+        // Perform decryption
+        cipher.doFinal(encrypted)
     }
 
     byte[] pad(byte[] data, int blockSize = 16) {
+        if (data.length % blockSize == 0) {
+            return data
+        }
+
         int paddingLength = blockSize - (data.length % blockSize)
         byte paddingByte = (byte) paddingLength
         byte[] paddedData = new byte[data.length + paddingLength]
@@ -341,4 +457,43 @@ class EncryptTest extends GroovyTestCase {
 
         return paddedData
     }
+
+    byte[] unpad(byte[] data, boolean verifyPadding = false) {
+        int padLen = data[data.length - 1]; // Get the last byte as padding length
+        if (padLen < 1 || padLen > 16) {
+            throw new IllegalArgumentException("Invalid padding length byte");
+        }
+
+        if (verifyPadding) {
+            // Verify that the padding bytes match the expected padding value
+            for (int i = data.length - padLen; i < data.length; i++) {
+                if (data[i] != padLen) {
+                    throw new IllegalArgumentException("Invalid padding data");
+                }
+            }
+        }
+
+        // Return the unpadded array
+        byte[] result = new byte[data.length - padLen];
+        System.arraycopy(data, 0, result, 0, data.length - padLen);
+        return result;
+    }
+
+    String decodeHost(String host) {
+        // Split the hex string into 4 octets (2 characters each)
+        StringBuilder sb = new StringBuilder(15)
+        sb.append(Integer.parseInt(host.substring(0, 2), 16))
+        sb.append(".")
+        sb.append(Integer.parseInt(host.substring(2, 4), 16))
+        sb.append(".")
+        sb.append(Integer.parseInt(host.substring(4, 6), 16))
+        sb.append(".")
+        sb.append(Integer.parseInt(host.substring(6, 8), 16))
+        sb.toString()
+    }
+
+    String decodePort(String port) {
+        Integer.parseInt(port.substring(0, 4), 16).toString()
+    }
+
 }
