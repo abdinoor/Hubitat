@@ -1,9 +1,6 @@
-import com.hubitat.app.DeviceWrapper
-import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 import hubitat.helper.HexUtils
-import hubitat.scheduling.AsyncResponse
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
 import org.codehaus.groovy.runtime.EncodingGroovyMethods
@@ -425,18 +422,6 @@ Integer calculateCRC32(byte[] data) {
     }
     return crc ^ 0xFFFFFFFF
 }
-
-char[] HEX_ARRAY = "0123456789abcdef".toCharArray();
-String bytesToHex(byte[] bytes) {
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
-        int v = bytes[j] & 0xFF;
-        hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-        hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
-    }
-    return new String(hexChars);
-}
-
 
 /* encrypt the payload part of the message */
 byte[] encrypt(byte[] key, String plaintext) {

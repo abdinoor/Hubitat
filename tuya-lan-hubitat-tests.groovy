@@ -74,7 +74,7 @@ class EncryptTest extends GroovyTestCase {
         int seqno = 1
 
         byte[] response = sendLanCmd(seqno, CONTROL, payload)
-        String hex = bytesToHex(response)
+        String hex = EncodingGroovyMethods.encodeHex(response)
 
         def expected = "000055aa000000010000000700000087332e33000000000000000000000000735879e92b4d4f2305721cb8528b2e2b39ad037276745189c833ad8c5fdda5b21fe8d4ab74047e6fa8a65e32b80cb5c9885e8cf0b3280224f051d0d9c680f672e1723748cca7f6e47fa3e19e09f3e7aa3bbc590ad2c7edec5303fcd363b077b51c464b29da353909f8e85cb3f30d06cf4d6349030000aa55"
 
@@ -87,7 +87,7 @@ class EncryptTest extends GroovyTestCase {
         int seqno = 2
 
         byte[] response = sendLanCmd(seqno, CONTROL, payload)
-        String hex = bytesToHex(response)
+        String hex = EncodingGroovyMethods.encodeHex(response)
 
         def expected = "000055aa000000020000000700000087332e33000000000000000000000000735879e92b4d4f2305721cb8528b2e2b39ad037276745189c833ad8c5fdda5b21fe8d4ab74047e6fa8a65e32b80cb5c9885e8cf0b3280224f051d0d9c680f6729dd41870e6e3fe0c5d8820ad623fb2969dca880d35c61e802ea53caf486cdafe10f8eb4bd2d8c8a07ee4e111b361b0b35a74b1e20000aa55"
 
@@ -100,7 +100,7 @@ class EncryptTest extends GroovyTestCase {
         int seqno = 2
 
         byte[] response = sendLanCmd(seqno, DP_QUERY, payload)
-        String hex = bytesToHex(response)
+        String hex = EncodingGroovyMethods.encodeHex(response)
 
         def expected = "000055aa000000020000000a000000884b267b5455dc0fb5563799cc85d4bc01885e8cf0b3280224f051d0d9c680f672487e659b4e77845d2e81b0506b5b671e39ad037276745189c833ad8c5fdda5b21fe8d4ab74047e6fa8a65e32b80cb5c9885e8cf0b3280224f051d0d9c680f6720680710f826d52300a1a6a30ae01525b70a1c51c682c50f1b145d347ced6c436ae22ed250000aa55"
 
@@ -474,18 +474,6 @@ Integer calculateCRC32(byte[] data) {
     }
     return crc ^ 0xFFFFFFFF
 }
-
-char[] HEX_ARRAY = "0123456789abcdef".toCharArray();
-String bytesToHex(byte[] bytes) {
-    char[] hexChars = new char[bytes.length * 2];
-    for (int j = 0; j < bytes.length; j++) {
-        int v = bytes[j] & 0xFF;
-        hexChars[j * 2] = HEX_ARRAY[v >>> 4];
-        hexChars[j * 2 + 1] = HEX_ARRAY[v & 0x0F];
-    }
-    return new String(hexChars);
-}
-
 
 /* encrypt the payload part of the message */
 byte[] encrypt(byte[] key, String plaintext) {
