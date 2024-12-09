@@ -31,7 +31,7 @@ class EncryptTest extends GroovyTestCase {
         {
             byte b = encrypted[i]
             byte a = expected[i]
-            // logger.info a + " vs. " + b
+            // LOG.debug a + " vs. " + b
             assertEquals(a, b)
         }
     }
@@ -45,7 +45,7 @@ class EncryptTest extends GroovyTestCase {
         {
             byte b = header[i]
             byte a = expected[i]
-            // logger.info a + " vs. " + b
+            // LOG.debug a + " vs. " + b
             assertEquals(a, b)
         }
     }
@@ -63,7 +63,7 @@ class EncryptTest extends GroovyTestCase {
         {
             byte b = packed[i]
             byte a = expected[i]
-            if (a != b) logger.info a + " vs. " + b + " idx=" + i
+            if (a != b) LOG.debug a + " vs. " + b + " idx=" + i
             assertEquals(a, b)
         }
     }
@@ -152,7 +152,7 @@ class EncryptTest extends GroovyTestCase {
             0x3C, (byte) 0xE3, (byte) 0xDE, 0x37, 0x5B, 0x79, (byte) 0xCA, (byte) 0x9E
         }
 
-        // logger.info "payloadBytes is ${payloadBytes.length} bytes"
+        // LOG.debug "payloadBytes is ${payloadBytes.length} bytes"
 
         def localKey = "9MZ4>xi7oPL?MCUf".getBytes()
         byte[] decryptedBytes = decrypt(localKey, payloadBytes)
@@ -170,18 +170,18 @@ class EncryptTest extends GroovyTestCase {
 
     public void testDecrypt() {
         String expected = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1732927690","dps":{"1":false}}/
-        // logger.info "expected array: ${expected.getBytes()}"
+        // LOG.debug "expected array: ${expected.getBytes()}"
 
         byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), expected)
-        // logger.info "enc string: ${new String(encrypted, "ISO-8859-1")}"
-        // logger.info "enc array: ${encrypted.toString()}"
-        // logger.info "enc string: ${encrypted.length}"
+        // LOG.debug "enc string: ${new String(encrypted, "ISO-8859-1")}"
+        // LOG.debug "enc array: ${encrypted.toString()}"
+        // LOG.debug "enc string: ${encrypted.length}"
 
         byte[] decrypted = decrypt(getDataValue("localKey").getBytes(), encrypted)
-        // logger.info "decrypted array: ${decrypted.toString()}"
+        // LOG.debug "decrypted array: ${decrypted.toString()}"
         String payload = new String(decrypted, "ISO-8859-1")
-        // logger.info "decrypted string: ${payload}"
-        // logger.info "decrypted string: ${decrypted.length}"
+        // LOG.debug "decrypted string: ${payload}"
+        // LOG.debug "decrypted string: ${decrypted.length}"
 
         assertEquals(expected, payload)
     }
@@ -211,12 +211,12 @@ class EncryptTest extends GroovyTestCase {
 
         byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
         payload = unpackMessage(hex, localKey)
-        // logger.info payload
+        // LOG.debug payload
         expected = '{"dps":{"1":true},"t":1733625177}'
         assertEquals(expected, payload)
 
         def response = new JsonSlurper().parseText(payload)
-        // logger.info "${response.dps}"
+        // LOG.debug "${response.dps}"
         boolean onOff = response.dps['1']
         assertTrue(onOff)
     }
@@ -235,12 +235,12 @@ class EncryptTest extends GroovyTestCase {
 
         byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
         String payload = unpackMessage(hex, localKey)
-        // logger.info payload
+        // LOG.debug payload
         expected = '{"dps":{"1":true,"2":620,"3":100,"4":"LED","102":0,"104":1}}'
         assertEquals(expected, payload)
 
         def response = new JsonSlurper().parseText(payload)
-        // logger.info "${response.dps}"
+        // LOG.debug "${response.dps}"
         boolean onOff = response.dps['1']
         assertTrue(onOff)
     }
@@ -251,7 +251,7 @@ class EncryptTest extends GroovyTestCase {
      */
 
     def setRelayState(onOff) {
-        logger.info "setRelayState: [switch: ${onOff}]"
+        LOG.debug "setRelayState: [switch: ${onOff}]"
         def timestamp = new Date().time.toString().substring(0, 10)
         def gwId = getDataValue("gwId")
         def dps = onOff ? "true" : "false"
@@ -274,10 +274,10 @@ class EncryptTest extends GroovyTestCase {
      */
 
     def sendLanCmd(int seqno, int cmd, String payload) {
-        // logger.info "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
+        // LOG.debug "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
 
         byte[] message = encodeMessage(seqno, cmd, payload, getDataValue("localKey").getBytes())
-        // logger.info payload
+        // LOG.debug payload
 
         return message
 
@@ -292,7 +292,7 @@ class EncryptTest extends GroovyTestCase {
             callback: "parse"
         ]]
     try {
-        // logger.info "sendHubCommand: ${myHubAction}"
+        // LOG.debug "sendHubCommand: ${myHubAction}"
         sendHubCommand(myHubAction)
     } catch (e) {
         log.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
@@ -528,7 +528,7 @@ byte[] pad(byte[] data, int blockSize = 16) {
 
 /* Unpack the message received from a device */
 String unpackMessage(String received, byte[] localKey) {
-    // logger.info "received: ${received} is ${received.length()}"
+    // LOG.debug "received: ${received} is ${received.length()}"
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
 
     // remove header, crc and suffix
@@ -545,32 +545,39 @@ String unpackMessage(String received, byte[] localKey) {
     }
 
     String payload = new String(payloadBytes, "ISO-8859-1")
-    // logger.info "payload: ${payload} is ${payloadBytes.length}"
+    // LOG.debug "payload: ${payload} is ${payloadBytes.length}"
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)
-    // logger.info "payload: ${payloadBytes} is ${payloadBytes.length}"
+    // LOG.debug "payload: ${payloadBytes} is ${payloadBytes.length}"
     byte[] decryptedBytes = decrypt(localKey, payloadBytes)
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
-    // logger.info "decrypted: ${decrypted} is ${decrypted.length()}"
+    // LOG.debug "decrypted: ${decrypted} is ${decrypted.length()}"
     return decrypted
 }
 
 String decodeHost(String host) {
     // Split the hex string into 4 octets (2 characters each)
     StringBuilder sb = new StringBuilder(15)
-    sb.append(Integer.parseInt(host.substring(0, 2), 16))
+    sb.append(Integer.parseInt(host?.substring(0, 2), 16))
     sb.append(".")
-    sb.append(Integer.parseInt(host.substring(2, 4), 16))
+    sb.append(Integer.parseInt(host?.substring(2, 4), 16))
     sb.append(".")
-    sb.append(Integer.parseInt(host.substring(4, 6), 16))
+    sb.append(Integer.parseInt(host?.substring(4, 6), 16))
     sb.append(".")
-    sb.append(Integer.parseInt(host.substring(6, 8), 16))
+    sb.append(Integer.parseInt(host?.substring(6, 8), 16))
     sb.toString()
 }
 
 String decodePort(String port) {
-    Integer.parseInt(port.substring(0, 4), 16).toString()
+    Integer.parseInt(port?.substring(0, 4), 16).toString()
 }
+
+private final Map LOG = [
+        debug    : { s -> logger.info(s) },
+        info     : { s -> logger.info(s) },
+        warn     : { s -> logger.info(s) },
+        error    : { s -> logger.info(s) }
+    ].asImmutable()
 
 }

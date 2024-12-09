@@ -69,6 +69,8 @@ metadata {
 @Field static final int DP_QUERY            = 0x0a
 @Field static final int PREFIX_55AA_VALUE   = 0x000055AA
 @Field static final int SUFFIX              = 0x0000AA55
+
+
 /* -------------------------------------------------------
  * Hubitat commands
  */
@@ -99,7 +101,7 @@ def updated() {
     updStatus << [pollRefresh: pollRefresh]
     runIn(getRefreshSeconds(), poll)
 
-    if (logEnable) log.debug "updated: ${updStatus}"
+    LOG.debug "updated: ${updStatus}"
 
     refresh()
 }
@@ -113,7 +115,7 @@ def off() {
 }
 
 def setRelayState(onOff) {
-    if (logEnable) log.debug "setRelayState: [switch: ${onOff}]"
+    LOG.debug "setRelayState: [switch: ${onOff}]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
     def dps = onOff ? "true" : "false"
@@ -127,7 +129,7 @@ void setLevel(level, ramp = null, onTime = null ) {
         off()
         return
     }
-    if (logEnable) log.debug "setLevel: [level: $level]"
+    LOG.debug "setLevel: [level: $level]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
@@ -138,7 +140,7 @@ void setLevel(level, ramp = null, onTime = null ) {
 
 void refresh() {
     def gwId = getDataValue("gwId")
-    if (logEnable) log.debug "refresh: [gwId: ${gwId}]"
+    LOG.debug "refresh: [gwId: ${gwId}]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}"}/$
     sendCmd(DP_QUERY, payload)
@@ -164,7 +166,7 @@ def sendCmd(int command, String payload) {
 
 /* callback from hubitat */
 def parse(message) {
-    if (logEnable) log.debug "parse: ${message}"
+    LOG.debug "parse: ${message}"
     try {
         updateStatus(message)
     } catch (e) {
@@ -217,11 +219,11 @@ def updateStatus(message) {
         updStatus << [level: level]
     }
 
-    if (logEnable) log.debug updStatus
+    LOG.debug updStatus
 }
 
 def sendLanCmd(int seqno, int command, String payload) {
-    if (logEnable) log.debug "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
+    LOG.debug "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
 
     byte[] message = encodeMessage(seqno, command, payload, getDataValue("localKey").getBytes())
 
@@ -239,14 +241,14 @@ def sendLanCmd(int seqno, int command, String payload) {
     try {
         sendHubCommand(myHubAction)
     } catch (e) {
-        log.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
+        LOG.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
     }
 }
 
 /* combine host IP address and port */
 def getAddress() {
     def ip = getDataValue("host")
-    if (ip == null) log.warn "No IP address set for ${device}"
+    if (ip == null) LOG.warn "No IP address set for ${device}"
     def port = getDataValue("port")
     return "${ip}:${port}"
 }
@@ -399,7 +401,8 @@ byte[] packMessage(int seqno, int cmd, byte[] payload, byte[] localKey) {
 
     return finalBuffer
 }
-// Helper method to write an integer to a byte array at a given position
+
+/* Helper method to write an integer to a byte array at a given position */
 void writeIntToBuffer(byte[] buffer, int pos, int value) {
     buffer[pos] = (byte) ((value >> 24) & 0xFF)
     buffer[pos + 1] = (byte) ((value >> 16) & 0xFF)
@@ -407,7 +410,7 @@ void writeIntToBuffer(byte[] buffer, int pos, int value) {
     buffer[pos + 3] = (byte) (value & 0xFF)
 }
 
-// CRC32 checksum calculation method
+/* CRC32 checksum calculation method */
 Integer calculateCRC32(byte[] data) {
     int crc = 0xFFFFFFFF
     for (byte b : data) {
@@ -447,28 +450,6 @@ byte[] decrypt(byte[] key, byte[] encrypted) {
 
     // Perform decryption
     cipher.doFinal(encrypted)
-}
-
-byte[] pad(byte[] data, int blockSize = 16) {
-    if (data.length % blockSize == 0) {
-        return data
-    }
-
-    int paddingLength = blockSize - (data.length % blockSize)
-    byte paddingByte = (byte) paddingLength
-    byte[] paddedData = new byte[data.length + paddingLength]
-
-    // Manually copy data to paddedData
-    for (int i = 0; i < data.length; i++) {
-        paddedData[i] = data[i]
-    }
-
-    // Fill padding bytes
-    for (int i = data.length; i < paddedData.length; i++) {
-        paddedData[i] = paddingByte
-    }
-
-    return paddedData
 }
 
 /* Unpack the message received from a device */
