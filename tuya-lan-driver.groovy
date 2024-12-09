@@ -166,7 +166,7 @@ def sendCmd(int command, String payload) {
 
 /* callback from hubitat */
 def parse(message) {
-    LOG.debug "parse: ${message}"
+    LOG.debug "parse: gwId:${getDataValue('gwId')} ${message}"
     try {
         updateStatus(message)
     } catch (e) {
