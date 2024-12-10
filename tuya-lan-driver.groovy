@@ -51,7 +51,7 @@ metadata {
                     type: 'bool',
                     title: 'Enable debug logging',
                     required: false,
-                    defaultValue: true
+                    defaultValue: false
 
             input name: 'txtEnable',
                     type: 'bool',
