@@ -6,7 +6,7 @@ metadata {
 	definition (name: "Kasa LAN Device",
 				namespace: "kasa",
 				author: "Dan Abdinoor",
-				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy'
+				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/kasa-lan-driver.groovy'
 			   ) {
         capability "Switch"
         capability "Refresh"
