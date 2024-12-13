@@ -1,60 +1,87 @@
+import groovy.json.JsonBuilder
 import groovy.transform.Field
 import hubitat.helper.HexUtils
 import hubitat.matter.DataType
-import java.util.concurrent.*
-import groovy.json.JsonBuilder
 import java.lang.Math
-import org.apache.commons.lang3.StringUtils
-import groovy.transform.CompileStatic
-import hubitat.helper.HexUtils
+import java.util.concurrent.*
 
 metadata {
-    definition(name: "Matter Dimmer", namespace: "matter", author: "abdinoor", component: true) {
+    definition(name: 'Matter LAN Device', namespace: 'matter', author: 'Dan Abdinoor',
+               importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/matter-lan-driver.groovy') {
         capability "Switch"
         capability "Refresh"
         capability "Switch Level"
-        capability "Change Level"
     }
+
     preferences {
-        input(name: "txtEnable", type: "bool", title: "Enable descriptionText logging", defaultValue: true)
-        input(name:'logEnable', type:'bool', title:'Enable debug logging', defaultValue:false)
+        section {
+            input name: 'logEnable',
+                    type: 'bool',
+                    title: 'Enable debug logging',
+                    required: false,
+                    defaultValue: false
+
+            input name: 'txtEnable',
+                    type: 'bool',
+                    title: 'Enable descriptionText logging',
+                    required: false,
+                    defaultValue: true
+        }
     }
 }
 
-void installed() {
-    log.info "Installed..."
+
+/* -------------------------------------------------------
+ * Hubitat commands
+ */
+
+def installed() {
+    def instStatus = installCommon()
+    state.remove("flashing")
+    state.remove("bin")
     device.updateSetting("txtEnable",[type:"bool",value:true])
     device.updateSetting("logEnable",[type:"bool",value:false])
+    logInfo("installed: ${instStatus}")
     refresh()
 }
 
-void refresh() {
-    refreshMatter(ep: getEndpoint() )
+/* called when device settings are saved */
+def updated() {
+    def updStatus = [:]
+
+    // updateDataValue("pollRefresh", pollRefresh.toString())
+    // updStatus << [pollRefresh: pollRefresh]
+    // runIn(getRefreshSeconds(), poll)
+
+    // LOG.debug "updated: ${updStatus}"
+
 }
 
-void componentRefresh(com.hubitat.app.DeviceWrapper cd) {
-    refreshMatter(ep: getEndpoint(cd))
-}
-
-// Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
-// Does a wildcard refresh if parameters are not specified (ep=FFFF / cluster=FFFFFFFF/ endpoint=FFFFFFFF is the Matter wildcard designation
-void refreshMatter(Map params = [:]) {
+// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
+void on(){
     try {
-        Map inputs = [ep:0xFFFF, clusterInt: 0xFFFFFFFF, attrInt: 0xFFFFFFFF] << params
-        assert inputs.ep instanceof Integer         // Make sure the type is as expected!
-        assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
-        assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
-
-       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
-        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
-
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-        sendEvent(name: "level", value: params.level.is(null) ? device.getDataValue("level") : params.level)
-        sendEvent(name: "switch", value: params.switch.is(null) ? device.getDataValue("switch") : params.switch)
+        Map inputs = [ ep: getEndpoint(device)]
+        assert inputs.ep instanceof Integer // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "on")
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
+}
+
+// off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
+void off(){
+    try {
+        Map inputs = [ ep: getEndpoint(device) ]
+        assert inputs.ep instanceof Integer  // Use Integer, not Hex!
+        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
+        sendEvent(name: "switch", value: "off")
+    } catch (AssertionError e) {
+        log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    } catch(e){
+        log.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -91,71 +118,107 @@ void setLevel( Map params = [:] ) {
         sendEvent(name: "level", value: inputs.level)
         sendEvent(name: "switch", value: inputs.level ? "on" : "off")
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        log.error "Incorrect parameter type or value used in setLevel() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
         log.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
-// This parser handles the Matter event message originating from Hubitat.
-void parse(String description) {
+void refresh() {
+    refreshMatter(ep: getEndpoint())
+}
+
+// Performs a refresh on a designated endpoint / cluster / attribute (all specified in Integer)
+// Does a wildcard refresh if parameters are not specified (ep=FFFF / cluster=FFFFFFFF/ endpoint=FFFFFFFF is the Matter wildcard designation
+void refreshMatter(Map params = [:]) {
     try {
-        Map decodedDescMap = parseDescriptionAsDecodedMap(description) // Using parser from matterTools.parseDescriptionAsDecodedMap
+        Map inputs = [ep:0xFFFF, clusterInt: 0xFFFFFFFF, attrInt: 0xFFFFFFFF] << params
+        assert inputs.ep instanceof Integer         // Make sure the type is as expected!
+        assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
+        assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
 
-        // Following code stores received cluster values in case you want to use them elsewhere
-        // But many clusters just aren't needed elsewhere!
-        List<Integer> ignoreTheseClusters = [0x001F, // Access Control
-                                             0x0029, // OTA Provider Cluster
-                                             0x002A, // OTA Software Update Requestor
-                                             0x002B, // Localization
-                                             0x002C, // Time Format
-                                             0x002D, // Unit Localization
-                                             0x002E, // Power Source Configuration - but Power Source Cluster, 0x002F is processed!
-                                             0x0030, // General Commissioning
-                                             0x0031, // Network Commissioning
-                                             0x0032, // Diagnostics Log
-                                             0x0033, // General Diagnostics. Has some interesting stuff here, like the IP addresses. Consider using later!
-                                             0x0034, // Software Diagnostics
-                                             0x0035, // Thread Diagnostics. Events have been implemented, but this produces a lot of activity
-                                             0x0036, // WiFi Diagnostics. Events have been implemented, but this produces a lot of activity
-                                             0x0037, // Ethernet Diagnostics
-                                             0x0038, // Time Sync Cluster
-                                             0x003C, // Administrative Commissioning
-                                             0x003E, // Node Operational Credentials
-                                             0x003F, // Group Key Management
-                                            ]
+       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
+        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
 
-        List<Integer> ignoreTheseAttributes = [0xFFF8,// GeneratedCommandList
-                                               0xFFF9, // AceptedCommandList
-                                               0xFFFA, // EventList
-                                               0xFFFB, // Attribute List
-                                               0xFFFD, // ClusterRevision
-                                               0xFE, // Fabric Index
-                                              ]
-        if (logEnable) log.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
-        if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) { return }
+        sendEvent(name: "level", value: params.level.is(null) ? device.getDataValue("level") : params.level)
+        sendEvent(name: "switch", value: params.switch.is(null) ? device.getDataValue("switch") : params.switch)
 
-        storeRetrievedData(decodedDescMap)
-        if ( ( decodedDescMap.clusterInt == 0x001D ) && ( decodedDescMap.attrInt.is(0x0000) )) {
-            //checkAndCreateChildDevices(decodedDescMap)
-        }
-
-        List<Map> hubEvents = getHubitatEvents(decodedDescMap)
-        if (hubEvents.is(null)) {
-            if (decodedDescMap.attrInt in [0xFFFC]) return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
-            if (logEnable) { log.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}" }
-            return
-        }
-
-        if (logEnable) log.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
-
-        parse(hubEvents)
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        log.error "Incorrect parameter type or value used in refreshMatter method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
+
+
+def sendCmd(int command, String payload) {
+    int seqno = 1
+    if (state.seqno != null) {
+        seqno = state.seqno++
+    }
+    state.lastCommand = payload
+    sendLanCmd(seqno, command, payload)
+}
+
+/* -------------------------------------------------------
+ * Communication methods
+ */
+
+// This parser handles the Matter event message originating from Hubitat.
+void parse(String description) {
+    Map decodedDescMap = parseDescriptionAsDecodedMap(description) // Using parser from matterTools.parseDescriptionAsDecodedMap
+
+    // Following code stores received cluster values in case you want to use them elsewhere
+    // But many clusters just aren't needed elsewhere!
+    List<Integer> ignoreTheseClusters = [0x001F, // Access Control
+                                         0x0029, // OTA Provider Cluster
+                                         0x002A, // OTA Software Update Requestor
+                                         0x002B, // Localization
+                                         0x002C, // Time Format
+                                         0x002D, // Unit Localization
+                                         0x002E, // Power Source Configuration - but Power Source Cluster, 0x002F is processed!
+                                         0x0030, // General Commissioning
+                                         0x0031, // Network Commissioning
+                                         0x0032, // Diagnostics Log
+                                         0x0033, // General Diagnostics. Has some interesting stuff here, like the IP addresses. Consider using later!
+                                         0x0034, // Software Diagnostics
+                                         0x0035, // Thread Diagnostics. Events have been implemented, but this produces a lot of activity
+                                         0x0036, // WiFi Diagnostics. Events have been implemented, but this produces a lot of activity
+                                         0x0037, // Ethernet Diagnostics
+                                         0x0038, // Time Sync Cluster
+                                         0x003C, // Administrative Commissioning
+                                         0x003E, // Node Operational Credentials
+                                         0x003F, // Group Key Management
+                                        ]
+
+    List<Integer> ignoreTheseAttributes = [0xFFF8,// GeneratedCommandList
+                                           0xFFF9, // AceptedCommandList
+                                           0xFFFA, // EventList
+                                           0xFFFB, // Attribute List
+                                           0xFFFD, // ClusterRevision
+                                           0xFE, // Fabric Index
+                                          ]
+    if (logEnable) log.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
+    if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) { return }
+
+    storeRetrievedData(decodedDescMap)
+    if ( ( decodedDescMap.clusterInt == 0x001D ) && ( decodedDescMap.attrInt.is(0x0000) )) {
+        //checkAndCreateChildDevices(decodedDescMap)
+    }
+
+    List<Map> hubEvents = getHubitatEvents(decodedDescMap)
+    if (hubEvents.is(null)) {
+        if (decodedDescMap.attrInt in [0xFFFC]) return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
+        if (logEnable) { log.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}" }
+        return
+    }
+
+    if (logEnable) log.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
+
+    parse(hubEvents)
+    log.error "<pre>${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
+}
+
 
 // This parse routine handles Hubitat SendEvent type messages (not the description raw strings originating from the device).
 // Hubitat's convention is to include a parse() routine with this function in Generic Component drivers (child device drivers).
@@ -164,7 +227,6 @@ void parse(String description) {
 // and those "extra" Maps are discarded. This allows a more generic "event Map" producting method (e.g., matterTools.createListOfMatterSendEventMaps)
 void parse(List sendEventTypeOfEvents) {
     if (logEnable) log.debug "${device.displayName}: ${description}"
-    try {
         List updateLocalStateOnlyAttributes = ["OnOffTransitionTime", "OnTransitionTime", "OffTransitionTime", "MinLevel", "MaxLevel",
                                                "DefaultMoveRate", "OffWaitTime", "Binding", "UserLabelList", "FixedLabelList", "VisibleIndicator",
                                                "DeviceTypeList", "ServerList", "ClientList", "PartsList", "TagList"]
@@ -185,11 +247,7 @@ void parse(List sendEventTypeOfEvents) {
         // Always check and reset the color name after any update.
         // In reality, only need to do it after a hue, saturation, or color temperature change,
         // but for code simplicity, just let sendEvent handle that filtering!
-    } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
         log.error "<pre>${e}<br><br>when processing parse with inputs ${sendEventTypeOfEvents}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
 }
 
 Integer getEndpoint() {
@@ -661,75 +719,21 @@ List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [
     childDevices.findAll{ getEndpoint(it) == inputs.ep }
 }
 
-
-// on implements Matter 1.2 Cluster Spec Section 1.5.7.2, On command
-void on(){
-    try {
-        Map inputs = [ ep: getEndpoint(device)]
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: "on")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// off implements Matter 1.2 Cluster Spec Section 1.5.7.1, Off command
-void off(){
-    try {
-        Map inputs = [ ep: getEndpoint(device) ]
-        assert inputs.ep instanceof Integer  // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: "off")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// "component" variant for legacy Generic Component child device driver support
-void componentOff(com.hubitat.app.DeviceWrapper cd){
-    off(ep: getEndpoint(cd))
-}
-
-//offWithEffect implements Matter 1.2 Cluster Spec Section 1.5.7.4, OffWithEffect command
-void offWithEffect( Map params = [:] ){
-    try {
-        Map inputs = [ ep: getEndpoint(device), effectIdentifier: 0, effectVariant:0] << params
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        assert inputs.effectIdentifier instanceof Integer && (0..1).contains(inputs.effectIdentifier)
-        assert (inputs.effectVariant instanceof Integer)  && (0..2).contains(inputs.effectVariant )
-
-        List<Map<String, String>> fields = []
-            fields.add(matter.cmdField(DataType.UINT8,  0, HexUtils.integerToHexString(inputs.effectIdentifier, 1) )) // effectIdentifier
-            fields.add(matter.cmdField(DataType.UINT16, 1, HexUtils.integerToHexString(inputs.effectVariant   , 1)  )) // effectVariant
-
-        String cmd = matter.invoke(inputs.ep, 0x0006, 0x40, fields)
-        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: "off")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in offWithEffect() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing offWithEffect with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
-
-// toggleOnOff implements Matter 1.2 Cluster Spec Section 1.5.7.3, Toggle command
-void toggleOnOff( Map params = [:] ){
-    try {
-        Map inputs = [ ep: getEndpoint(device)] << params
-        assert inputs.ep instanceof Integer // Use Integer, not Hex!
-        sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x02), hubitat.device.Protocol.MATTER))
-        sendEvent(name: "switch", value: device.currentValue("switch") == "on" ? "off" : "on")
-    } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in toggleOnOff() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    } catch(e){
-        log.error "<pre>${e}<br><br>when processing toggleOnOff with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
-    }
-}
+@Field private final Map LOG = [
+        debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
+        info     : { s -> log.info(s) },
+        warn     : { s -> log.warn(s) },
+        error    : { s -> log.error(s) },
+        exception: { message, exception ->
+            List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
+            Integer line = relevantEntries[0]?.lineNumber
+            String method = relevantEntries[0]?.methodName
+            log.error("${message}: ${exception} at line ${line} (${method})")
+            if (settings.logEnable) {
+                log.debug("App exception stack trace:\n${relevantEntries.join('\n')}")
+            }
+        }
+].asImmutable()
 
 // Identify Cluster 0x0003 Enum Data Types (Matter Cluster Spec. Section 1.2.5)
 @Field static Map IdentifyTypeEnum =   [ 0:"None",     1:"LightOutput",    2:"VisibleIndicator",    3:"AudibleBeep",    4:"Display",    5:"Actuator"] // Cluste 0x0003
@@ -1076,7 +1080,6 @@ dv = device value - usually the content of the event map's "value" field after p
         0x0008:[[attribute:"colorMode",                 valueTransform: {[0:"RGB", 1:"CurrentXY", 2:"CT"].get(it)}], // This is how Hubitat names it
                 [attribute:"ColorMode",                     ] // This is how Matter names it!
         ],
-        0x000F:[[attribute:"Options"]],
 
         0x0010:[[attribute:"NumberOfPrimaries"]],
 
@@ -1228,14 +1231,7 @@ dv = device value - usually the content of the event map's "value" field after p
         0x000C:[[attribute:"ExpiryDate",                units:"epoch-s"]],
         ],
     0x040C:[// Concentration Measurement Cluster (Matter Spec Section 2.10)
-        0x0000:[[attribute:"MeasuredValue"]],
-        0x0001:[[attribute:"MinMeasuredValue"]],
-        0x0002:[[attribute:"MaxMeasuredValue"]],
-        0x0003:[[attribute:"PeakMeasuredValue"]],
         0x0004:[[attribute:"PeakMeasuredValueWindow"]],
-        0x0005:[[attribute:"AverageMeasuredValue"]],
-        0x0006:[[attribute:"AverageMeasuredValueWindow"]],
-        0x0007:[[attribute:"Uncertainty"]],
         0x0008:[[attribute:"MeasurementUnit",       valueTransform: { MeasurementUnitEnum.get(it) }]],
         0x0009:[[attribute:"MeasurementMedium",     valueTransform: { MeasurementMediumEnum.get(it) }]],
         0x000A:[[attribute:"LevelValue",            valueTransform: { LevelValueEnum.get(it) }]],

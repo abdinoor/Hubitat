@@ -10,8 +10,8 @@ metadata {
                importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy') {
         capability "Switch"
         capability "Refresh"
+        capability "Configuration"
         capability "Switch Level"
-        capability "Change Level"
         attribute "localKey", "string"
         attribute "host", "string"
         attribute "port", "string"
