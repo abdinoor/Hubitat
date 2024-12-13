@@ -6,7 +6,7 @@ import javax.crypto.spec.SecretKeySpec
 import org.codehaus.groovy.runtime.EncodingGroovyMethods
 
 metadata {
-    definition(name: 'Tuya LAN Driver', namespace: 'tuya', author: 'Dan Abdinoor',
+    definition(name: 'Tuya LAN Device', namespace: 'tuya', author: 'Dan Abdinoor',
                importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy') {
         capability "Switch"
         capability "Refresh"
