@@ -47,7 +47,8 @@ def installed() {
 
 /* called when device settings are saved */
 def updated() {
-    def updStatus = [:]
+    refresh()
+    // def updStatus = [:]
 
     // updateDataValue("pollRefresh", pollRefresh.toString())
     // updStatus << [pollRefresh: pollRefresh]
@@ -65,9 +66,9 @@ void on(){
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x01 ), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: "on")
     } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "Incorrect parameter type or value used in on() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing on with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -79,15 +80,15 @@ void off(){
         sendHubCommand(new hubitat.device.HubAction(matter.invoke(inputs.ep, 0x0006, 0x00), hubitat.device.Protocol.MATTER))
         sendEvent(name: "switch", value: "off")
     } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "Incorrect parameter type or value used in off() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing off with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
 void setLevel(level, ramp = null, onTime = null ) {
     setLevel(ep: getEndpoint(),
-             level:level as Integer,
+             level: level as Integer,
              transitionTime10ths: ramp.is(null) ? 0 : (ramp * 10) as Integer
     )
 }
@@ -110,17 +111,17 @@ void setLevel( Map params = [:] ) {
         fields.add(matter.cmdField(DataType.UINT16, 1, (hexTransitionTime10ths[2..3] + hexTransitionTime10ths[0..1]) )) // TransitionTime in 0.1 seconds, uint16 0-65534, byte swapped
         fields.add(matter.cmdField(DataType.UINT8,  2, "00")) // OptionMask, map8
         fields.add(matter.cmdField(DataType.UINT8,  3, "00"))  // OptionsOverride, map8
-        if (logEnable) log.debug "fields are ${fields}"
+        if (logEnable) LOG.debug "fields are ${fields}"
         String cmd = matter.invoke(inputs.ep, 0x0008, 0x04, fields) // Move To Level with On/Off
-        if (logEnable) log.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
+        if (logEnable) LOG.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
         sendEvent(name: "level", value: inputs.level)
         sendEvent(name: "switch", value: inputs.level ? "on" : "off")
     } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in setLevel() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "Incorrect parameter type or value used in setLevel() method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing setLevel with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -137,19 +138,16 @@ void refreshMatter(Map params = [:]) {
         assert inputs.clusterInt instanceof Integer || inputs.clusterInt instanceof Long
         assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
 
-       // Groovy Slashy String form of a GString  https://docs.groovy-lang.org/latest/html/documentation/#_slashy_string
-        String cmd = /he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/
+        String cmd = $/he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/$
 
-        sendEvent(name: "level", value: params.level.is(null) ? device.getDataValue("level") : params.level)
-        sendEvent(name: "switch", value: params.switch.is(null) ? device.getDataValue("switch") : params.switch)
-
+        sendEvent(name: "level", value: inputs.level.is(null) ? device.getDataValue("level") : inputs.level)
+        sendEvent(name: "switch", value: inputs.switch.is(null) ? device.getDataValue("switch") : inputs.switch)
     } catch (AssertionError e) {
-        log.error "Incorrect parameter type or value used in refreshMatter method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "Incorrect parameter type or value used in refreshMatter method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
-
 
 def sendCmd(int command, String payload) {
     int seqno = 1
@@ -198,7 +196,7 @@ void parse(String description) {
                                            0xFFFD, // ClusterRevision
                                            0xFE, // Fabric Index
                                           ]
-    if (logEnable) log.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
+    if (logEnable) LOG.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
     if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) { return }
 
     storeRetrievedData(decodedDescMap)
@@ -209,14 +207,14 @@ void parse(String description) {
     List<Map> hubEvents = getHubitatEvents(decodedDescMap)
     if (hubEvents.is(null)) {
         if (decodedDescMap.attrInt in [0xFFFC]) return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
-        if (logEnable) { log.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}" }
+        if (logEnable) { LOG.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}" }
         return
     }
 
-    if (logEnable) log.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
+    if (logEnable) LOG.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
 
     parse(hubEvents)
-    log.error "<pre>${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    LOG.error "<pre>${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
 }
 
 
@@ -226,7 +224,7 @@ void parse(String description) {
 // The List of SendEvent Maps may include event Maps that are not needed by a particular driver (as determined based on the attributes of the driver)
 // and those "extra" Maps are discarded. This allows a more generic "event Map" producting method (e.g., matterTools.createListOfMatterSendEventMaps)
 void parse(List sendEventTypeOfEvents) {
-    if (logEnable) log.debug "${device.displayName}: ${description}"
+    if (logEnable) LOG.debug "${device.displayName}: ${description}"
         List updateLocalStateOnlyAttributes = ["OnOffTransitionTime", "OnTransitionTime", "OffTransitionTime", "MinLevel", "MaxLevel",
                                                "DefaultMoveRate", "OffWaitTime", "Binding", "UserLabelList", "FixedLabelList", "VisibleIndicator",
                                                "DeviceTypeList", "ServerList", "ClientList", "PartsList", "TagList"]
@@ -234,9 +232,9 @@ void parse(List sendEventTypeOfEvents) {
             if (device.hasAttribute (it.name)) {
                 if (txtEnable) {
                     if(device.currentValue(it.name) == it.value) {
-                        if (txtEnable) log.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )+" (unchanged)" // Log if txtEnable and the value is the same
+                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )+" (unchanged)" // Log if txtEnable and the value is the same
                     } else {
-                        if (txtEnable) log.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") ) // Log if txtEnable and the value is the same
+                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") ) // Log if txtEnable and the value is the same
                     }
                 }
                 sendEvent(it)
@@ -247,7 +245,7 @@ void parse(List sendEventTypeOfEvents) {
         // Always check and reset the color name after any update.
         // In reality, only need to do it after a hue, saturation, or color temperature change,
         // but for code simplicity, just let sendEvent handle that filtering!
-        log.error "<pre>${e}<br><br>when processing parse with inputs ${sendEventTypeOfEvents}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing parse with inputs ${sendEventTypeOfEvents}<br><br>Stack trace:<br>${getStackTrace(e) }"
 }
 
 Integer getEndpoint() {
@@ -259,7 +257,7 @@ Integer getEndpoint(com.hubitat.app.DeviceWrapper thisDevice) {
 
     String rValue =  thisDevice?.getDataValue("endpointId") ?: thisDevice?.endpointId
     if (rValue.is( null )) {
-        log.error "Device ${thisDevice.displayName} does not have a defined endpointId"
+        LOG.error "Device ${thisDevice.displayName} does not have a defined endpointId"
         return 1
     }
     return Integer.parseInt(rValue, 16)
@@ -476,7 +474,7 @@ Object getElementValue(StringBuilder valueString, Integer elementType){
             valueString = valueString.delete(0,2) // Reached End-Of-Container, so trim that off!
             break;
         case 0b00011000: // End of container
-            log.error "end-of-container encountered. Should have been caught in the struture, list, or array processing loop. What happened?"
+            LOG.error "end-of-container encountered. Should have been caught in the struture, list, or array processing loop. What happened?"
             break;
         case 0b11001: // Reserved
         case 0b11010: // Reserved
@@ -485,16 +483,16 @@ Object getElementValue(StringBuilder valueString, Integer elementType){
         case 0b11101: // Reserved
         case 0b11110: // Reserved
         case 0b11111: // Reserved
-            log.error "Received a Reserved value - Whaaaat?"; break
+            LOG.error "Received a Reserved value - Whaaaat?"; break
             rValue= null
             break;
         }
         return rValue
     } catch(AssertionError e)  {
-        log.error "In method parseDescriptionAsDecodedMap, Assertion failed with <pre>${e}"
+        LOG.error "In method parseDescriptionAsDecodedMap, Assertion failed with <pre>${e}"
         return null
     }catch(e) {
-        log.error "In method parseDescriptionAsDecodedMap, error is <pre>${e}"
+        LOG.error "In method parseDescriptionAsDecodedMap, error is <pre>${e}"
         return null
     }
 }
@@ -534,9 +532,9 @@ Map parseDescriptionAsDecodedMap(description){
         rValue.put("decodedValue", decodedValue)
         return rValue
     } catch(AssertionError e)  {
-        log.error "In method parseDescriptionAsDecodedMap, Assertion failed with <pre>${e}"
+        LOG.error "In method parseDescriptionAsDecodedMap, Assertion failed with <pre>${e}"
     } catch(e) {
-        log.error "In method parseDescriptionAsDecodedMap, error is <pre>${e}"
+        LOG.error "In method parseDescriptionAsDecodedMap, error is <pre>${e}"
     }
 }
 
@@ -579,9 +577,9 @@ void writeClusterAttribute(Map params = [:]) {
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing writeClusterAttribute with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing writeClusterAttribute with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -603,9 +601,9 @@ void readClusterAttribute(Map params = [:]) {
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing readClusterAttribute with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing readClusterAttribute with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -613,10 +611,11 @@ void readClusterAttribute(Map params = [:]) {
 void storeRetrievedData(Map descMap){
     String netId = device?.getDeviceNetworkId()
 
+    def decodedValue = descMap.decodedValue ? descMap.decodedValue : ""
     globalDataStorage.get(netId, new ConcurrentHashMap<String,ConcurrentHashMap>(8, 0.75, 1))
         .get(descMap.endpointInt, new ConcurrentHashMap<String,ConcurrentHashMap>(8, 0.75, 1))
             .get(descMap.clusterInt, new ConcurrentHashMap<String,ConcurrentHashMap>(8, 0.75, 1))
-                .put(descMap.attrInt, descMap.decodedValue ? descMap.decodedValue : "")
+                .put(descMap.attrInt, decodedValue)
 }
 
 // Retrieves a particular attribute from those previously received.
@@ -628,7 +627,7 @@ Object getStoredAttributeData(Map params = [:]){
         assert inputs.cluster instanceof String  && inputs.cluster.matches("[0-9A-F]+")  // String must be a hex value.
         assert inputs.attrId instanceof String   && inputs.attrId.matches("[0-9A-F]+")   // String must be a hex value.
     } catch(AssertionError e) {
-            log.error "<pre>${e}"
+            LOG.error "<pre>${e}"
             throw(e)
     }
 
@@ -643,19 +642,19 @@ Object getStoredAttributeData(Map params = [:]){
 
 void showStoredAttributeData(){
     String netId = device?.getDeviceNetworkId()
-    log.info "<pre> ${new JsonBuilder(globalDataStorage.get(netId)).toPrettyString()}"
+    LOG.info "<pre> ${new JsonBuilder(globalDataStorage.get(netId)).toPrettyString()}"
 }
 
 void unsubscribeAll(){
     String cmd = matter.unsubscribe()
-    log.info "Sending command to Unsubscribe from all attribute reports: " + cmd
+    LOG.info "Sending command to Unsubscribe from all attribute reports: " + cmd
     sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
 }
 
 void subscribeAll(){
     // This is a wildcard subscribe. Subscribes to all endpoints, all clusters, all attributes
     String cmd = 'subscribe 0x00 0xFF [{"ep":"0xFFFF","cluster":"0xFFFFFFFF","attr":"0xFFFFFFFF"}]'
-    log.info "Sending command to Subscribe for all attributes with a 0 second minimum time: " + cmd
+    LOG.info "Sending command to Subscribe for all attributes with a 0 second minimum time: " + cmd
     sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
 }
 
@@ -706,9 +705,9 @@ List getHubitatEvents(Map descMap) {
                     }
         return rEvents
     } catch (AssertionError e) {
-        log.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
-        log.error "<pre>${e}<br><br>when processing getHubitatEvents inputs ${descMap}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        LOG.error "<pre>${e}<br><br>when processing getHubitatEvents inputs ${descMap}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
 
@@ -720,19 +719,19 @@ List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [
 }
 
 @Field private final Map LOG = [
-        debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
-        info     : { s -> log.info(s) },
-        warn     : { s -> log.warn(s) },
-        error    : { s -> log.error(s) },
-        exception: { message, exception ->
-            List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
-            Integer line = relevantEntries[0]?.lineNumber
-            String method = relevantEntries[0]?.methodName
-            log.error("${message}: ${exception} at line ${line} (${method})")
-            if (settings.logEnable) {
-                log.debug("App exception stack trace:\n${relevantEntries.join('\n')}")
-            }
+    debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
+    info     : { s -> log.info(s) },
+    warn     : { s -> log.warn(s) },
+    error    : { s -> log.error(s) },
+    exception: { message, exception ->
+        List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
+        Integer line = relevantEntries[0]?.lineNumber
+        String method = relevantEntries[0]?.methodName
+        log.error "<pre>${exception}<br><br>${message}: ${exception} at line ${line} (${method})<br><br>Stack trace:<br>${getStackTrace(exception) }"
+        if (settings.logEnable) {
+            log.debug("App exception stack trace:\n${relevantEntries.join('\n')}")
         }
+    }
 ].asImmutable()
 
 // Identify Cluster 0x0003 Enum Data Types (Matter Cluster Spec. Section 1.2.5)

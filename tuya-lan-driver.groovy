@@ -509,7 +509,7 @@ String decodePort(String port) {
             List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
             Integer line = relevantEntries[0]?.lineNumber
             String method = relevantEntries[0]?.methodName
-            log.error("${message}: ${exception} at line ${line} (${method})")
+            log.error "<pre>${exception}<br><br>${message}: ${exception} at line ${line} (${method})<br><br>Stack trace:<br>${getStackTrace(exception) }"
             if (settings.logEnable) {
                 log.debug("App exception stack trace:\n${relevantEntries.join('\n')}")
             }
