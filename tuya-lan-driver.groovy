@@ -169,7 +169,7 @@ def parse(message) {
     try {
         updateStatus(message)
     } catch (e) {
-        LOG.exception('parse error', e)
+        LOG.exception('parse error message: ${message}', e)
     }
 }
 

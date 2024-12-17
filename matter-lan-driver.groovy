@@ -4,6 +4,7 @@ import hubitat.helper.HexUtils
 import hubitat.matter.DataType
 import java.lang.Math
 import java.util.concurrent.*
+import org.apache.commons.lang3.StringUtils
 
 metadata {
     definition(name: 'Matter LAN Device', namespace: 'matter', author: 'Dan Abdinoor',
@@ -26,6 +27,12 @@ metadata {
                     title: 'Enable descriptionText logging',
                     required: false,
                     defaultValue: true
+
+            input name: 'pollRefresh',
+                    title: 'Polling Refresh in Seconds',
+                    type: 'number',
+                    required: true,
+                    defaultValue: '300'
         }
     }
 }
@@ -48,13 +55,13 @@ def installed() {
 /* called when device settings are saved */
 def updated() {
     refresh()
-    // def updStatus = [:]
+    def updStatus = [:]
 
-    // updateDataValue("pollRefresh", pollRefresh.toString())
-    // updStatus << [pollRefresh: pollRefresh]
-    // runIn(getRefreshSeconds(), poll)
+    updateDataValue("pollRefresh", pollRefresh.toString())
+    updStatus << [pollRefresh: pollRefresh]
+    runIn(getRefreshSeconds(), poll)
 
-    // LOG.debug "updated: ${updStatus}"
+    LOG.debug "updated: ${updStatus}"
 
 }
 
@@ -139,15 +146,19 @@ void refreshMatter(Map params = [:]) {
         assert inputs.attrInt instanceof Integer || inputs.attrInt instanceof Long
 
         String cmd = $/he rattrs [{"ep":"${inputs.ep}","cluster":"${inputs.clusterInt}","attr":"${inputs.attrInt}"}]/$
-
-        sendEvent(name: "level", value: inputs.level.is(null) ? device.getDataValue("level") : inputs.level)
-        sendEvent(name: "switch", value: inputs.switch.is(null) ? device.getDataValue("switch") : inputs.switch)
+        sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
     } catch (AssertionError e) {
         LOG.error "Incorrect parameter type or value used in refreshMatter method.<br><pre>${e}<br><br>Stack trace:<br>${getStackTrace(e) }"
     } catch(e){
         LOG.error "<pre>${e}<br><br>when processing refreshMatter with inputs ${inputs}<br><br>Stack trace:<br>${getStackTrace(e) }"
     }
 }
+
+def poll() {
+    runIn(getRefreshSeconds(), poll)
+    refresh()
+}
+
 
 def sendCmd(int command, String payload) {
     int seqno = 1
@@ -157,6 +168,14 @@ def sendCmd(int command, String payload) {
     state.lastCommand = payload
     sendLanCmd(seqno, command, payload)
 }
+
+/* get refresh rate or a default */
+def getRefreshSeconds() {
+    def seconds = getDataValue("pollRefresh")
+    if (seconds == null) return 300
+    return Integer.parseInt(getDataValue("pollRefresh"))
+}
+
 
 /* -------------------------------------------------------
  * Communication methods
@@ -197,24 +216,29 @@ void parse(String description) {
                                            0xFE, // Fabric Index
                                           ]
     if (logEnable) LOG.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
-    if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) { return }
+
+    if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) {
+        return
+    }
 
     storeRetrievedData(decodedDescMap)
-    if ( ( decodedDescMap.clusterInt == 0x001D ) && ( decodedDescMap.attrInt.is(0x0000) )) {
-        //checkAndCreateChildDevices(decodedDescMap)
-    }
 
     List<Map> hubEvents = getHubitatEvents(decodedDescMap)
     if (hubEvents.is(null)) {
-        if (decodedDescMap.attrInt in [0xFFFC]) return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
-        if (logEnable) { LOG.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}" }
+        // if (decodedDescMap.attrInt in [0xFFFC]) {
+        //     return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
+        // }
+        if (logEnable) LOG.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}"
         return
     }
 
     if (logEnable) LOG.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
 
-    parse(hubEvents)
-    LOG.error "<pre>${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    try {
+        parse(hubEvents)
+    } catch(e) {
+        LOG.error "<pre>parse: ${e}<br><br>when processing description string ${description}<br><br>Stack trace:<br>${getStackTrace(e) }"
+    }
 }
 
 
@@ -232,9 +256,9 @@ void parse(List sendEventTypeOfEvents) {
             if (device.hasAttribute (it.name)) {
                 if (txtEnable) {
                     if(device.currentValue(it.name) == it.value) {
-                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )+" (unchanged)" // Log if txtEnable and the value is the same
+                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )+" (unchanged)"
                     } else {
-                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") ) // Log if txtEnable and the value is the same
+                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )
                     }
                 }
                 sendEvent(it)
@@ -242,10 +266,7 @@ void parse(List sendEventTypeOfEvents) {
                 device.updateDataValue(it.name, "${it.value}")
             }
         }
-        // Always check and reset the color name after any update.
-        // In reality, only need to do it after a hue, saturation, or color temperature change,
-        // but for code simplicity, just let sendEvent handle that filtering!
-        LOG.error "<pre>${e}<br><br>when processing parse with inputs ${sendEventTypeOfEvents}<br><br>Stack trace:<br>${getStackTrace(e) }"
+        // LOG.error "<pre>${e}<br><br>when processing parse with inputs ${sendEventTypeOfEvents}<br><br>Stack trace:<br>${getStackTrace(e) }"
 }
 
 Integer getEndpoint() {
