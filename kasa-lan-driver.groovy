@@ -17,7 +17,7 @@ metadata {
 	}
 
 	preferences {
-		input ("textEnable", "bool", 
+		input ("txtEnable", "bool",
 			   title: "Enable descriptionText logging",
 			   defaultValue: true)
 		input name: 'logEnable',
@@ -68,7 +68,7 @@ def updated() {
 		return updStatus
 	}
 
-	updStatus << [textEnable: textEnable, logEnable: logEnable]
+	updStatus << [txtEnable: txtEnable, logEnable: logEnable]
 
 	if (manualIp != getDataValue("deviceIP")) {
 		updateDataValue("deviceIP", manualIp)
@@ -95,6 +95,10 @@ def updated() {
 	LOG.info "Kasa LAN updated: ${updStatus}"
 }
 
+def refresh() {
+	sendCmd("""{"system":{"get_sysinfo":{}}}""")
+}
+
 
 /**
 SWITCH METHODS
@@ -115,7 +119,6 @@ def setRelayState(onOff) {
 
 	if (getDataValue("plugId")?.trim()) {
 		def plugId = getDataValue("plugId")
-		// sendCmd("""{"context":{"child_ids":[${plugId}]},"system":{"set_relay_state":{"state":${onOff}}}}""")
 		sendCmd("""{"context":{"child_ids":["${getDataValue("plugId")}"]},""" +
 				""""system":{"set_relay_state":{"state":${onOff}}}}""")
 	} else {
@@ -168,10 +171,6 @@ def presetBrightness(level) {
 /**
 SYSTEM METHODS
 */
-
-def refresh() {
-	sendCmd("""{"system":{"get_sysinfo":{}}}""")
-}
 
 def reboot() {
 	sendCmd("""{"${sysService()}":{"reboot":{"delay":1}}}""")
@@ -360,27 +359,31 @@ def distResp(response) {
 }
 
 def setSysInfo(status) {
-	LOG.debug status.toString()
+	LOG.debug "setSysInfo status: ${status}"
 	def logData = [:]
 	def switchStatus = status.relay_state
 
-	// for smart plugs get the child device with this plugId
-	if (getDataValue("plugId")?.trim()) {
-		def childStatus = status.children.find { it.id == getDataValue("plugId") }
+	// for smart plugs get the child device with this plugNo
+	if (getDataValue("plugNo")?.trim()) {
+		def childStatus = status.children.find { it.id == getDataValue("plugNo") }
 		switchStatus = childStatus?.state
 	}
 
 	def onOff = switchStatus == 1 ? "on" : "off"
-	sendEvent(name: "switch", value: onOff, type: "digital")
-	logData << [switch: onOff]
+	if (onOff != device.currentValue("switch")) {
+		sendEvent(name: "switch", value: onOff, descriptionText: "Switch is ${onOff}")
+		logData << [switch: onOff]
+	}
 
-	if (status.brightness != null) {
-		def level = status.brightness
-		sendEvent(name: "level", value: level)
+	def level = status.brightness
+	if (level != null && level != device.currentValue("level")) {
+		sendEvent(name: "level", value: level, descriptionText: "Dimmer level is ${level}")
 		logData << [level: level]
 	}
 
-	LOG.debug "Kasa LAN status: ${logData}"
+	if (logData.size() > 0) {
+		if (txtEnable) LOG.info "Kasa LAN status: ${logData}"
+	}
 }
 
 def setCommsError(status) {
