@@ -48,7 +48,7 @@ def installed() {
 	sendEvent(name: "commsError", value: "false")
 	state.errorCount = 0
 	runIn(1, updated)
-	LOG.info "Kasa LAN installed: ${instStatus}"
+	LOG.info "Kasa device installed: ${instStatus}"
 }
 
 def updated() {
@@ -64,7 +64,7 @@ def updated() {
 
 	def updStatus = [:]
 	if (rebootDev) {
-		updStatus << [rebootDev: rebootDevice()]
+		updStatus << [rebootDev: reboot()]
 		return updStatus
 	}
 
@@ -92,11 +92,20 @@ def updated() {
     runIn(getRefreshSeconds(), poll)
 	runIn(5, listAttributes)
 
-	LOG.info "Kasa LAN updated: ${updStatus}"
+	LOG.info "Kasa device updated: ${updStatus}"
 }
 
 def refresh() {
 	sendCmd("""{"system":{"get_sysinfo":{}}}""")
+}
+
+def poll() {
+	refresh()
+	runIn(getRefreshSeconds(), poll)
+}
+
+def reboot() {
+	sendCmd("""{"${sysService()}":{"reboot":{"delay":1}}}""")
 }
 
 
@@ -143,7 +152,7 @@ def setLevel(level, transTime = 100) {
     sendEvent(name: "level", value: level, type: "digital")
 
     def updates = ['switch': "on", level: level]
-    LOG.debug "Kasa LAN setLevel: ${updates}"
+    LOG.debug "Kasa device setLevel: ${updates}"
 }
 
 def presetLevel(level) {
@@ -169,17 +178,8 @@ def presetBrightness(level) {
 
 
 /**
-SYSTEM METHODS
+HELPER METHODS
 */
-
-def reboot() {
-	sendCmd("""{"${sysService()}":{"reboot":{"delay":1}}}""")
-}
-
-def poll() {
-	refresh()
-	runIn(getRefreshSeconds(), poll)
-}
 
 def sysService() {
 	def service = "system"
@@ -382,7 +382,7 @@ def setSysInfo(status) {
 	}
 
 	if (logData.size() > 0) {
-		if (txtEnable) LOG.info "Kasa LAN status: ${logData}"
+		if (txtEnable) LOG.info "Kasa status changed: ${logData}"
 	}
 }
 
