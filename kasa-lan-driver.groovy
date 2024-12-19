@@ -48,7 +48,7 @@ def installed() {
 	sendEvent(name: "commsError", value: "false")
 	state.errorCount = 0
 	runIn(1, updated)
-	LOG.info "Kasa device installed: ${instStatus}"
+	LOG.info "installed: ${instStatus}"
 }
 
 def updated() {
@@ -81,18 +81,13 @@ def updated() {
 	state.errorCount = 0
 	sendEvent(name: "commsError", value: "false")
 
-	if (plugId != getDataValue("plugId") && plugId?.trim()) {
-		updateDataValue("plugId", plugId)
-    	updStatus << [plugId: plugId]
-	}
-
     updateDataValue("pollRefresh", pollRefresh.toString())
     updStatus << [pollRefresh: pollRefresh]
 
     runIn(getRefreshSeconds(), poll)
 	runIn(5, listAttributes)
 
-	LOG.info "Kasa device updated: ${updStatus}"
+	LOG.info "updated: ${updStatus}"
 }
 
 def refresh() {
@@ -124,15 +119,15 @@ def off() {
 }
 
 def setRelayState(onOff) {
-	LOG.debug "setRelayState: [switch: ${onOff}]"
-
-	if (getDataValue("plugId")?.trim()) {
-		def plugId = getDataValue("plugId")
-		sendCmd("""{"context":{"child_ids":["${getDataValue("plugId")}"]},""" +
+	if (getDataValue("plugNo")?.trim()) {
+		def plugNo = getDataValue("plugNo")
+		sendCmd("""{"context":{"child_ids":["${getDataValue("plugNo")}"]},""" +
 				""""system":{"set_relay_state":{"state":${onOff}}}}""")
 	} else {
 		sendCmd("""{"system":{"set_relay_state":{"state":${onOff}}}}""")
 	}
+
+	LOG.desc "setRelayState: [switch: ${onOff}]"
 }
 
 
@@ -142,7 +137,7 @@ DIMMER METHODS
 
 def setLevel(level, transTime = 100) {
     level = checkLevel(level)
-    LOG.debug "setDimmerTransition: [level: ${level}, transTime: ${transTime}]"
+    LOG.desc "setDimmerTransition: [level: ${level}, transTime: ${transTime}]"
     if (level == 0) {
         setRelayState(0)
     } else {
@@ -152,7 +147,7 @@ def setLevel(level, transTime = 100) {
     sendEvent(name: "level", value: level, type: "digital")
 
     def updates = ['switch': "on", level: level]
-    LOG.debug "Kasa device setLevel: ${updates}"
+    LOG.desc "setLevel: ${updates}"
 }
 
 def presetLevel(level) {
@@ -172,7 +167,7 @@ def checkLevel(level) {
 
 def presetBrightness(level) {
     level = checkLevel(level)
-    LOG.debug "presetLevel: [level: ${level}]"
+    LOG.desc "presetLevel: [level: ${level}]"
     sendCmd("""{"smartlife.iot.dimmer":{"set_brightness":{"brightness":${level}}},"system" :{"get_sysinfo" :{}}}""")
 }
 
@@ -382,7 +377,7 @@ def setSysInfo(status) {
 	}
 
 	if (logData.size() > 0) {
-		if (txtEnable) LOG.info "Kasa status changed: ${logData}"
+		LOG.desc "Kasa status changed: ${logData}"
 	}
 }
 
@@ -439,10 +434,11 @@ private inputXorTcp(resp) {
 }
 
 @Field private final Map LOG = [
-        debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
-        info     : { s -> log.info(s) },
-        warn     : { s -> log.warn(s) },
-        error    : { s -> log.error(s) },
+        debug    : { s -> if (settings.logEnable) { log.debug("${device.getLabel()}: ${s}") } },
+        desc    : { s -> if (settings.txtEnable) { log.info("${device.getLabel()}: ${s}") } },
+        info     : { s -> log.info("${device.getLabel()}: ${s}") },
+        warn     : { s -> log.warn("${device.getLabel()}: ${s}") },
+        error    : { s -> log.error("${device.getLabel()}: ${s}") },
         exception: { message, exception ->
             List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
             Integer line = relevantEntries[0]?.lineNumber
