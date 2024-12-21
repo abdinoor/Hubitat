@@ -118,9 +118,9 @@ void setLevel( Map params = [:] ) {
         fields.add(matter.cmdField(DataType.UINT16, 1, (hexTransitionTime10ths[2..3] + hexTransitionTime10ths[0..1]) )) // TransitionTime in 0.1 seconds, uint16 0-65534, byte swapped
         fields.add(matter.cmdField(DataType.UINT8,  2, "00")) // OptionMask, map8
         fields.add(matter.cmdField(DataType.UINT8,  3, "00"))  // OptionsOverride, map8
-        if (logEnable) LOG.debug "fields are ${fields}"
+        LOG.debug "fields are ${fields}"
         String cmd = matter.invoke(inputs.ep, 0x0008, 0x04, fields) // Move To Level with On/Off
-        if (logEnable) LOG.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
+        LOG.debug "sending command with transitionTime10ths value ${inputs.transitionTime10ths}: ${cmd}"
 
         sendHubCommand(new hubitat.device.HubAction(cmd, hubitat.device.Protocol.MATTER))
         sendEvent(name: "level", value: inputs.level)
@@ -215,7 +215,7 @@ void parse(String description) {
                                            0xFFFD, // ClusterRevision
                                            0xFE, // Fabric Index
                                           ]
-    if (logEnable) LOG.debug "${device.displayName}: In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
+    LOG.debug "In parse, Matter attribute report string:<br><font color = 'green'>${description}<br><font color = 'black'>was decoded as: <font color='blue'>${decodedDescMap}"
 
     if ((decodedDescMap.clusterInt in ignoreTheseClusters) || (decodedDescMap.attrInt in ignoreTheseAttributes)) {
         return
@@ -225,14 +225,10 @@ void parse(String description) {
 
     List<Map> hubEvents = getHubitatEvents(decodedDescMap)
     if (hubEvents.is(null)) {
-        // if (decodedDescMap.attrInt in [0xFFFC]) {
-        //     return // FeatureMap is stored, but a Hubitat SendEvent event is not distributed
-        // }
-        if (logEnable) LOG.warn "${device.displayName}: No events produced for map: <font color='blue'>${decodedDescMap}"
         return
     }
 
-    if (logEnable) LOG.debug "${device.displayName}: Events generated: <font color='blue'>${hubEvents}"
+    LOG.debug "Events generated: <font color='blue'>${hubEvents}"
 
     try {
         parse(hubEvents)
@@ -248,7 +244,7 @@ void parse(String description) {
 // The List of SendEvent Maps may include event Maps that are not needed by a particular driver (as determined based on the attributes of the driver)
 // and those "extra" Maps are discarded. This allows a more generic "event Map" producting method (e.g., matterTools.createListOfMatterSendEventMaps)
 void parse(List sendEventTypeOfEvents) {
-    if (logEnable) LOG.debug "${device.displayName}: ${description}"
+    LOG.debug "${description}"
         List updateLocalStateOnlyAttributes = ["OnOffTransitionTime", "OnTransitionTime", "OffTransitionTime", "MinLevel", "MaxLevel",
                                                "DefaultMoveRate", "OffWaitTime", "Binding", "UserLabelList", "FixedLabelList", "VisibleIndicator",
                                                "DeviceTypeList", "ServerList", "ClientList", "PartsList", "TagList"]
@@ -256,9 +252,9 @@ void parse(List sendEventTypeOfEvents) {
             if (device.hasAttribute (it.name)) {
                 if (txtEnable) {
                     if(device.currentValue(it.name) == it.value) {
-                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )+" (unchanged)"
+                        LOG.desc ((it.descriptionText) ? (it.descriptionText) : ("${it.name} set to ${it.value}") )+" (unchanged)"
                     } else {
-                        if (txtEnable) LOG.info ((it.descriptionText) ? (it.descriptionText) : ("${device.displayName}: ${it.name} set to ${it.value}") )
+                        LOG.desc ((it.descriptionText) ? (it.descriptionText) : ("${it.name} set to ${it.value}") )
                     }
                 }
                 sendEvent(it)
@@ -278,7 +274,7 @@ Integer getEndpoint(com.hubitat.app.DeviceWrapper thisDevice) {
 
     String rValue =  thisDevice?.getDataValue("endpointId") ?: thisDevice?.endpointId
     if (rValue.is( null )) {
-        LOG.error "Device ${thisDevice.displayName} does not have a defined endpointId"
+        LOG.error "device does not have a defined endpointId"
         return 1
     }
     return Integer.parseInt(rValue, 16)
@@ -740,10 +736,11 @@ List<com.hubitat.app.DeviceWrapper> getChildDeviceListByEndpoint( Map params = [
 }
 
 @Field private final Map LOG = [
-    debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
-    info     : { s -> log.info(s) },
-    warn     : { s -> log.warn(s) },
-    error    : { s -> log.error(s) },
+    debug    : { s -> if (settings.logEnable) { log.debug("${device.displayName}: ${s}") } },
+    desc    : { s -> if (settings.txtEnable) { log.info("${device.displayName}: ${s}") } },
+    info     : { s -> log.info("${device.displayName}: ${s}") },
+    warn     : { s -> log.warn("${device.displayName}: ${s}") },
+    error    : { s -> log.error("${device.displayName}: ${s}") },
     exception: { message, exception ->
         List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
         Integer line = relevantEntries[0]?.lineNumber

@@ -377,7 +377,7 @@ def setSysInfo(status) {
 	}
 
 	if (logData.size() > 0) {
-		LOG.desc "Kasa status changed: ${logData}"
+		LOG.desc "status changed: ${logData}"
 	}
 }
 
@@ -434,11 +434,11 @@ private inputXorTcp(resp) {
 }
 
 @Field private final Map LOG = [
-        debug    : { s -> if (settings.logEnable) { log.debug("${device.getLabel()}: ${s}") } },
-        desc    : { s -> if (settings.txtEnable) { log.info("${device.getLabel()}: ${s}") } },
-        info     : { s -> log.info("${device.getLabel()}: ${s}") },
-        warn     : { s -> log.warn("${device.getLabel()}: ${s}") },
-        error    : { s -> log.error("${device.getLabel()}: ${s}") },
+        debug    : { s -> if (settings.logEnable) { log.debug("${device.displayName}: ${s}") } },
+        desc    : { s -> if (settings.txtEnable) { log.info("${device.displayName}: ${s}") } },
+        info     : { s -> log.info("${device.displayName}: ${s}") },
+        warn     : { s -> log.warn("${device.displayName}: ${s}") },
+        error    : { s -> log.error("${device.displayName}: ${s}") },
         exception: { message, exception ->
             List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
             Integer line = relevantEntries[0]?.lineNumber

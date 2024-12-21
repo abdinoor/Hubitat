@@ -100,7 +100,7 @@ def updated() {
     updStatus << [pollRefresh: pollRefresh]
     runIn(getRefreshSeconds(), poll)
 
-    LOG.debug "updated: ${updStatus}"
+    LOG.desc "updated: ${updStatus}"
 
     refresh()
 }
@@ -114,7 +114,7 @@ def off() {
 }
 
 def setRelayState(onOff) {
-    LOG.debug "setRelayState: [switch: ${onOff}]"
+    LOG.desc "setRelayState: [switch: ${onOff}]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
     def dps = onOff ? "true" : "false"
@@ -128,7 +128,7 @@ void setLevel(level, ramp = null, onTime = null ) {
         off()
         return
     }
-    LOG.debug "setLevel: [level: $level]"
+    LOG.desc "setLevel: [level: $level]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
@@ -179,16 +179,8 @@ def updateStatus(message) {
         return
     }
 
-    def updStatus = [:]
-    updStatus << [gwId: getDataValue("gwId")]
-
-    String field = "ip:"
+    String field = "payload:"
     int loc = message.indexOf(field) + field.length()
-    String host = decodeHost(message.substring(loc, loc + 8))
-    updStatus << [host: host]
-
-    field = "payload:"
-    loc = message.indexOf(field) + field.length()
     String payload = message.substring(loc, message.length())
 
     byte[] decoded = payload?.decodeBase64()
@@ -202,23 +194,26 @@ def updateStatus(message) {
     payload = unpackMessage(hex, getDataValue("localKey").getBytes())
 
     // handle the incoming data points (DPs)
+    def updStatus = [:]
     def response = new JsonSlurper().parseText(payload)
-    def onOff
-    def status
-    def level
     if (response.dps['1'] != null) {
-        onOff = response.dps['1']
-        status = (onOff) ? "on" : "off"
-        sendEvent(name: "switch", value: status)
-        updStatus << ['switch': status]
+        def onOff = (response.dps['1']) ? "on" : "off"
+        if (onOff != device.currentValue("switch")) {
+            sendEvent(name: "switch", value: onOff)
+            updStatus << ["switch": onOff]
+        }
     }
     if (response.dps['2'] != null) {
-        level = (int) (response.dps['2'] / 10)
-        sendEvent(name: "level", value: level)
-        updStatus << [level: level]
+        def level = (int) (response.dps['2'] / 10)
+        if (level != device.currentValue("level")) {
+            sendEvent(name: "level", value: level)
+            updStatus << [level: level]
+        }
     }
 
-    LOG.debug updStatus
+    if (updStatus.size() > 0) {
+        LOG.desc "status changed: ${updStatus}"
+    }
 }
 
 def sendLanCmd(int seqno, int command, String payload) {
@@ -500,10 +495,11 @@ String decodePort(String port) {
 }
 
 @Field private final Map LOG = [
-        debug    : { s -> if (settings.logEnable == true) { log.debug(s) } },
-        info     : { s -> log.info(s) },
-        warn     : { s -> log.warn(s) },
-        error    : { s -> log.error(s) },
+        debug    : { s -> if (settings.logEnable) { log.debug("${device.displayName}: ${s}") } },
+        desc    : { s -> if (settings.txtEnable) { log.info("${device.displayName}: ${s}") } },
+        info     : { s -> log.info("${device.displayName}: ${s}") },
+        warn     : { s -> log.warn("${device.displayName}: ${s}") },
+        error    : { s -> log.error("${device.displayName}: ${s}") },
         exception: { message, exception ->
             List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
             Integer line = relevantEntries[0]?.lineNumber
