@@ -123,11 +123,8 @@ def setRelayState(onOff) {
     sendEvent(name: "switch", value: (onOff) ? "on" : "off", type: "digital")
 }
 
-void setLevel(level, ramp = null, onTime = null ) {
-    if (!level) {
-        off()
-        return
-    }
+def setLevel(level, ramp = null, onTime = null ) {
+    level = checkLevel(level)
     LOG.desc "setLevel: [level: $level]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
@@ -137,7 +134,18 @@ void setLevel(level, ramp = null, onTime = null ) {
     sendEvent(name: "switch", value: "on")
 }
 
-void refresh() {
+def checkLevel(level) {
+    if (level == null || level < 0) {
+        level = device.currentValue("level")
+        LOG.warn "checkLevel: Entered level null or negative. Level set to ${level}"
+    } else if (level > 100) {
+        level = 100
+        LOG.warn "checkLevel: Entered level > 100.  Level set to ${level}"
+    }
+    return level
+}
+
+def refresh() {
     def gwId = getDataValue("gwId")
     LOG.debug "refresh: [gwId: ${gwId}]"
     def timestamp = new Date().time.toString().substring(0, 10)
@@ -169,7 +177,7 @@ def parse(message) {
     try {
         updateStatus(message)
     } catch (e) {
-        LOG.exception('parse error message: ${message}', e)
+        LOG.error e
     }
 }
 

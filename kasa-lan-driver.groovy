@@ -137,7 +137,7 @@ DIMMER METHODS
 
 def setLevel(level, transTime = 100) {
     level = checkLevel(level)
-    LOG.desc "setDimmerTransition: [level: ${level}, transTime: ${transTime}]"
+    LOG.desc "setLevel: [level: ${level}, transTime: ${transTime}]"
     if (level == 0) {
         setRelayState(0)
     } else {
