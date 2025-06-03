@@ -177,7 +177,7 @@ def parse(message) {
     try {
         updateStatus(message)
     } catch (e) {
-        LOG.error e
+        LOG.exception("parse", e)
     }
 }
 
@@ -191,6 +191,10 @@ def updateStatus(message) {
     int loc = message.indexOf(field) + field.length()
     String payload = message.substring(loc, message.length())
 
+    if (payload.length() == 0) {
+        return
+    }
+
     byte[] decoded = payload?.decodeBase64()
     String hex = new String(decoded, "ISO-8859-1")
 
@@ -200,6 +204,9 @@ def updateStatus(message) {
     }
 
     payload = unpackMessage(hex, getDataValue("localKey").getBytes())
+    if (payload == null) {
+        return
+    }
 
     // handle the incoming data points (DPs)
     def updStatus = [:]
@@ -444,6 +451,11 @@ byte[] encrypt(byte[] key, String plaintext) {
 
 /* decrypt the payload part of the response */
 byte[] decrypt(byte[] key, byte[] encrypted) {
+    if (encrypted.length % 16 != 0) {
+        LOG.error "encrypted length must be divisible by 16 [length=${encrypted.length}]"
+        return null
+    }
+
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
     // Create AES cipher instance in ECB mode PKCS5Padding
@@ -463,6 +475,10 @@ String unpackMessage(String received, byte[] localKey) {
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
     LOG.debug "unpackMessage: gwId:${getDataValue("gwId")} received:${received} len:${decodedBytes?.length}"
 
+    if (decodedBytes.length == 0) {
+        return null
+    }
+
     // remove header, crc and suffix
     int from = (5 * 8)
     int to = decodedBytes.length - (2 * 8) - 1
@@ -476,11 +492,31 @@ String unpackMessage(String received, byte[] localKey) {
         payloadBytes = payloadBytes[from..to]
     }
 
+    int suffixIndex = payloadBytes.findIndexOf { it == (byte)0x00 } // look for 00 00 AA 55
+    for (int i = 0; i < payloadBytes.length - 3; i++) {
+        if (payloadBytes[i] == 0x00 && payloadBytes[i+1] == 0x00 &&
+            payloadBytes[i+2] == (byte)0xAA && payloadBytes[i+3] == 0x55) {
+            payloadBytes = payloadBytes[0..<i]
+            break
+        }
+    }
+
+    // decode
     String payload = new String(payloadBytes, "ISO-8859-1")
+    payloadBytes = EncodingGroovyMethods.decodeHex(payload)
+    if (payloadBytes.length % 16 != 0) {
+        LOG.info "decrypt: using key=${new String(localKey)}, payloadBytes=${payloadBytes.encodeHex().toString()}, len=${payloadBytes.length}"
+        LOG.error "payloadBytes length must be divisible by 16 [payload: ${payload}, bytes: ${payloadBytes.length}]"
+        return null
+    }
+
 
     // decrypt
-    payloadBytes = EncodingGroovyMethods.decodeHex(payload)
     byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+    if (decryptedBytes == null) {
+        LOG.error "decryptedBytes must not be null [payload: ${payload}]"
+        return null
+    }
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
     return decrypted
 }
