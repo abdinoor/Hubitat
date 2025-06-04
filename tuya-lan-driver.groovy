@@ -113,6 +113,7 @@ def off() {
     setRelayState(0)
 }
 
+/* Switch method */
 def setRelayState(onOff) {
     LOG.desc "setRelayState: [switch: ${onOff}]"
     def timestamp = new Date().time.toString().substring(0, 10)
@@ -123,6 +124,7 @@ def setRelayState(onOff) {
     sendEvent(name: "switch", value: (onOff) ? "on" : "off", type: "digital")
 }
 
+/* Dimmer method */
 def setLevel(level, ramp = null, onTime = null ) {
     level = checkLevel(level)
     LOG.desc "setLevel: [level: $level]"
@@ -131,18 +133,17 @@ def setLevel(level, ramp = null, onTime = null ) {
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
     sendCmd(CONTROL, payload)
     sendEvent(name: "level", value: level)
-    sendEvent(name: "switch", value: "on")
+    setRelayState(level > 0)  // turn on/off after setting level
 }
 
 def checkLevel(level) {
-    if (level == null || level < 0) {
-        level = device.currentValue("level")
-        LOG.warn "checkLevel: Entered level null or negative. Level set to ${level}"
-    } else if (level > 100) {
-        level = 100
-        LOG.warn "checkLevel: Entered level > 100.  Level set to ${level}"
+    if (level != null && level >= 0 && level <= 100) {
+        return level
     }
-    return level
+
+    def currValue = device.currentValue("level")
+    LOG.warn "checkLevel: Invalid level=${level}. Using level=${currValue}"
+    return currValue
 }
 
 def refresh() {
