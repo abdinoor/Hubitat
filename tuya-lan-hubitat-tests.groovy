@@ -585,8 +585,14 @@ String unpackMessage(String received, byte[] localKey) {
     String payload = new String(payloadBytes, "ISO-8859-1")
 
     // decrypt
-    payloadBytes = EncodingGroovyMethods.decodeHex(payload)
-    byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+    byte[] hex = EncodingGroovyMethods.decodeHex(payload)
+    if (hex.length % 16 != 0) {
+        LOG.info "decrypt: using key=${new String(localKey)}, hex=${hex.encodeHex().toString()}, len=${hex.length}"
+        LOG.error "hex length must be divisible by 16 [payload: ${payload}, bytes: ${hex.length}]"
+        return null
+    }
+
+    byte[] decryptedBytes = decrypt(localKey, hex)
     if (decryptedBytes == null) {
         LOG.debug "unpackMessage: [payload: ${payload}]"
         return null
