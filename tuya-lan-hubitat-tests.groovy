@@ -221,6 +221,36 @@ class EncryptTest extends GroovyTestCase {
         assertTrue(onOff)
     }
 
+    public void testMod16Message() {
+        String message = "index:00, mac:CC8CBF448660, ip:c0a805bc, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDMyNTE4MjQ0OUM0QzcyODY3OUI2M0NBOURDMzMwMTgyMjc5OUZDMzIwOTJDNkI4NTY3RjE0OEU1REVGMDBDOTg4RTkzRTMxQjc0N0E4RTFDRERBRjdGMjk1MkJBMjkyNzFDQ0NCMzlGOEFGNTkwNTU1MjBBMzlGNEU0OTk3Mzk0N0Q1Q0JERkQwMDAwQUE1NQ"
+
+        String field = "payload:"
+        int loc = message.indexOf(field) + field.length()
+        String payload = message.substring(loc, message.length())
+
+        String expected = "MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDMyNTE4MjQ0OUM0QzcyODY3OUI2M0NBOURDMzMwMTgyMjc5OUZDMzIwOTJDNkI4NTY3RjE0OEU1REVGMDBDOTg4RTkzRTMxQjc0N0E4RTFDRERBRjdGMjk1MkJBMjkyNzFDQ0NCMzlGOEFGNTkwNTU1MjBBMzlGNEU0OTk3Mzk0N0Q1Q0JERkQwMDAwQUE1NQ"
+        assertEquals(expected, payload)
+
+
+        byte[] decoded = payload.decodeBase64()
+        String hex = new String(decoded, "ISO-8859-1")
+
+        expected = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC3301822799FC32092C6B8567F148E5DEF00C988E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E49973947D5CBDFD0000AA55"
+        assertEquals(expected, hex)
+
+        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
+        // byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+        payload = unpackMessage(hex, localKey)
+        // LOG.debug payload
+        expected = "{\"dps\":{\"1\":true,\"2\":200,\"3\":100,\"4\":\"LED\",\"102\":0,\"104\":1}}";
+        assertEquals(expected, payload)
+
+        def response = new JsonSlurper().parseText(payload)
+        // LOG.debug "${response.dps}"
+        boolean onOff = response.dps['1']
+        assertTrue(onOff)
+    }
+
     public void testHeaderErrorParse(){
         // this looks like it has a header but does not
         String hex = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC330182AB78D7BAE9AA1CB8F75FDF72C7E492528E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E4997394B4DD9C390000AA55"
@@ -528,8 +558,16 @@ byte[] pad(byte[] data, int blockSize = 16) {
 
 /* Unpack the message received from a device */
 String unpackMessage(String received, byte[] localKey) {
-    // LOG.debug "received: ${received} is ${received.length()}"
+    if (received == null) {
+        return null
+    }
+
     byte[] decodedBytes = received.getBytes("ISO-8859-1")
+    // LOG.debug "unpackMessage: gwId:${getDataValue("gwId")} received:${received} len:${decodedBytes?.length}"
+
+    if (decodedBytes.length == 0) {
+        return null
+    }
 
     // remove header, crc and suffix
     int from = (5 * 8)
@@ -545,14 +583,15 @@ String unpackMessage(String received, byte[] localKey) {
     }
 
     String payload = new String(payloadBytes, "ISO-8859-1")
-    // LOG.debug "payload: ${payload} is ${payloadBytes.length}"
 
     // decrypt
     payloadBytes = EncodingGroovyMethods.decodeHex(payload)
-    // LOG.debug "payload: ${payloadBytes} is ${payloadBytes.length}"
     byte[] decryptedBytes = decrypt(localKey, payloadBytes)
+    if (decryptedBytes == null) {
+        LOG.debug "unpackMessage: [payload: ${payload}]"
+        return null
+    }
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
-    // LOG.debug "decrypted: ${decrypted} is ${decrypted.length()}"
     return decrypted
 }
 
