@@ -186,71 +186,6 @@ class EncryptTest extends GroovyTestCase {
         assertEquals(expected, payload)
     }
 
-    public void testParseMessage() {
-        String message = "index:00, mac:D8D668400385, ip:c0a805bd, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDA3MDAwMDAwMEMwMDAwMDAwMEE1MDVBOTE0MDAwMEFBNTUwMDAwNTVBQTAwMDAwMDAwMDAwMDAwMDgwMDAwMDA0QjAwMDAwMDAwMzMyRTMzMDAwMDAwMDAwMDAwNzdBMzAwMDAwMDAxQ0QwRUVDM0E2MTEwMTQ4NjJCOENBMTE1RUE3NjJGNThENjkwQkE2RkNFQ0E5Mzk2OUMyQjNEQzU0NDVFRUIwMEQ0QkExRjBDRjgzRTFEMUU0QTAwRUJDMTY2RkEzN0VGMzQ2MUIxNDMwMDAwQUE1NQ=="
-
-        String field = "payload:"
-        int loc = message.indexOf(field) + field.length()
-        String payload = message.substring(loc, message.length())
-
-        String expected = "MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDA3MDAwMDAwMEMwMDAwMDAwMEE1MDVBOTE0MDAwMEFBNTUwMDAwNTVBQTAwMDAwMDAwMDAwMDAwMDgwMDAwMDA0QjAwMDAwMDAwMzMyRTMzMDAwMDAwMDAwMDAwNzdBMzAwMDAwMDAxQ0QwRUVDM0E2MTEwMTQ4NjJCOENBMTE1RUE3NjJGNThENjkwQkE2RkNFQ0E5Mzk2OUMyQjNEQzU0NDVFRUIwMEQ0QkExRjBDRjgzRTFEMUU0QTAwRUJDMTY2RkEzN0VGMzQ2MUIxNDMwMDAwQUE1NQ=="
-        assertEquals(expected, payload)
-
-
-        byte[] decoded = payload.decodeBase64()
-        String hex = new String(decoded, "ISO-8859-1")
-
-        expected = "000055AA00000001000000070000000C00000000A505A9140000AA55000055AA00000000000000080000004B00000000332E3300000000000077A300000001CD0EEC3A611014862B8CA115EA762F58D690BA6FCECA93969C2B3DC5445EEB00D4BA1F0CF83E1D1E4A00EBC166FA37EF3461B1430000AA55"
-        assertEquals(expected, hex)
-
-        loc = hex.indexOf("000055AA", 8)
-        hex = hex.substring(loc, hex.length())
-
-        expected = "000055AA00000000000000080000004B00000000332E3300000000000077A300000001CD0EEC3A611014862B8CA115EA762F58D690BA6FCECA93969C2B3DC5445EEB00D4BA1F0CF83E1D1E4A00EBC166FA37EF3461B1430000AA55"
-        assertEquals(expected, hex)
-
-        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
-        payload = unpackMessage(hex, localKey)
-        // LOG.debug payload
-        expected = '{"dps":{"1":true},"t":1733625177}'
-        assertEquals(expected, payload)
-
-        def response = new JsonSlurper().parseText(payload)
-        // LOG.debug "${response.dps}"
-        boolean onOff = response.dps['1']
-        assertTrue(onOff)
-    }
-
-    public void testMod16Message() {
-        String message = "index:00, mac:CC8CBF448660, ip:c0a805bc, port:1a0c, type:LAN_TYPE_RAW, payload:MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDMyNTE4MjQ0OUM0QzcyODY3OUI2M0NBOURDMzMwMTgyMjc5OUZDMzIwOTJDNkI4NTY3RjE0OEU1REVGMDBDOTg4RTkzRTMxQjc0N0E4RTFDRERBRjdGMjk1MkJBMjkyNzFDQ0NCMzlGOEFGNTkwNTU1MjBBMzlGNEU0OTk3Mzk0N0Q1Q0JERkQwMDAwQUE1NQ"
-
-        String field = "payload:"
-        int loc = message.indexOf(field) + field.length()
-        String payload = message.substring(loc, message.length())
-
-        String expected = "MDAwMDU1QUEwMDAwMDAwMTAwMDAwMDBBMDAwMDAwNEMwMDAwMDAwMDMyNTE4MjQ0OUM0QzcyODY3OUI2M0NBOURDMzMwMTgyMjc5OUZDMzIwOTJDNkI4NTY3RjE0OEU1REVGMDBDOTg4RTkzRTMxQjc0N0E4RTFDRERBRjdGMjk1MkJBMjkyNzFDQ0NCMzlGOEFGNTkwNTU1MjBBMzlGNEU0OTk3Mzk0N0Q1Q0JERkQwMDAwQUE1NQ"
-        assertEquals(expected, payload)
-
-
-        byte[] decoded = payload.decodeBase64()
-        String hex = new String(decoded, "ISO-8859-1")
-
-        expected = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC3301822799FC32092C6B8567F148E5DEF00C988E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E49973947D5CBDFD0000AA55"
-        assertEquals(expected, hex)
-
-        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
-        // byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
-        payload = unpackMessage(hex, localKey)
-        // LOG.debug payload
-        expected = "{\"dps\":{\"1\":true,\"2\":200,\"3\":100,\"4\":\"LED\",\"102\":0,\"104\":1}}";
-        assertEquals(expected, payload)
-
-        def response = new JsonSlurper().parseText(payload)
-        // LOG.debug "${response.dps}"
-        boolean onOff = response.dps['1']
-        assertTrue(onOff)
-    }
-
     public void testHeaderErrorParse(){
         // this looks like it has a header but does not
         String hex = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC330182AB78D7BAE9AA1CB8F75FDF72C7E492528E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E4997394B4DD9C390000AA55"
@@ -275,6 +210,23 @@ class EncryptTest extends GroovyTestCase {
         assertTrue(onOff)
     }
 
+    public void testMod16Message1() {
+        String hex = """325182449C4C728679B63CA9DC3301829913583B021F347B5D1CF4C3B65F315CC7CF0A35A03C3AB3D13B06262A3583CFEE9E6172CDEFDCE7CAF4F6A4D21CE2B5C565AD680000AA55000055AA00000000000000080000004B00000000332E3300000000000009B00000000107A32F20B9015D4E7A2997B740D699E6AD4397D8EB9627468D344175971AF491F15C4E70C9A37516353B10754CB7E27E"""
+
+        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
+        String payload = unpackMessage(hex, localKey)
+        String expected = """{"dps":{"1":true},"type":"query","t":1749549507}"""
+        assertEquals(expected, payload)
+    }
+
+    public void testMod16Message2() {
+        String hex = """CD0EEC3A611014862B8CA115EA762F58AB261659CFD506D9B6C75DC8C364CB10D4BA1F0CF83E1D1E4A00EBC166FA37EFCD5E8F8C0000AA55000055AA00000000000000080000005B00000000332E33000000000000E65700000001CD0EEC3A611014862B8CA115EA762F58FA9FDB82D8B26C98E361163AD2D0A1F1B9852AA1EC588BB41FBD635980F4622A08026D4602E54483B68918F1B375C4D1"""
+
+        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+        String payload = unpackMessage(hex, localKey)
+        String expected = """{"dps":{"1":true},"t":1749806243}"""
+        assertEquals(expected, payload)
+    }
 
     /* -------------------------------------------------------
      * Helper methods
@@ -528,8 +480,6 @@ byte[] decrypt(byte[] key, byte[] encrypted) {
     Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
     cipher.init(Cipher.DECRYPT_MODE, secretKey)
 
-    // encrypted = pad(encrypted, 16)
-
     // Perform decryption
     cipher.doFinal(encrypted)
 }
@@ -559,47 +509,186 @@ byte[] pad(byte[] data, int blockSize = 16) {
 /* Unpack the message received from a device */
 String unpackMessage(String received, byte[] localKey) {
     if (received == null) {
+        LOG.error "unpackMessage: received must not be null"
         return null
     }
 
-    byte[] decodedBytes = received.getBytes("ISO-8859-1")
-    // LOG.debug "unpackMessage: gwId:${getDataValue("gwId")} received:${received} len:${decodedBytes?.length}"
+    List<String> frames = splitTuyaFrames(received)
+    LOG.debug "unpackMessage: parsed ${frames.size()} frames"
+    return decryptFrame(frames[0], localKey)
+}
 
-    if (decodedBytes.length == 0) {
+/**
+ * Extract the encrypted payload (still AES-ECB, PKCS-padded) from a raw
+ * Tuya-LAN frame supplied as a byte array.
+ *
+ * Layout we expect in bytes
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │  0- 3 :  prefix 0x000055AA                                  │
+ * │  4- 7 :  sequence number                                    │
+ * │  8-11 :  command                                            │
+ * │ 12-15 :  msgLen                                             │
+ * │ 16-23 :  (reserved / padding used by some firmwares)        │
+ * │ 24-39 :  optional 3.x version header (“3.3”, 12 bytes → 16) │
+ * │  ..   :  encrypted JSON payload                             │
+ * │  -8--5:  CRC32                                              │
+ * │  -4--1:  suffix 0x0000AA55                                  │
+ * └─────────────────────────────────────────────────────────────┘
+ *
+ * @param frameBytes  complete frame *including* prefix & suffix
+ * @return byte[]     encrypted payload portion only
+ */
+byte[] extractPayload(byte[] frameBytes) {
+    if (!frameBytes) return null
+
+    int idx = 0
+
+    // if tuya prefix 0x000055AA remove prefix(4)+seq(4)+cmd(4)+msgLen(4)
+    int msgLen = 0
+    if (frameBytes.length >= 4 &&
+        (frameBytes[0] & 0xFF) == 0x00 &&
+        (frameBytes[1] & 0xFF) == 0x00 &&
+        (frameBytes[2] & 0xFF) == 0x55 &&
+        (frameBytes[3] & 0xFF) == 0xAA)
+    {
+        idx += 4 * 4
+        msgLen = ((frameBytes[12] & 0xFF) << 24) |
+                 ((frameBytes[13] & 0xFF) << 16) |
+                 ((frameBytes[14] & 0xFF) << 8)  |
+                 (frameBytes[15] & 0xFF)
+    }
+
+    if (msgLen > 0) {
+        int modLen = msgLen / 16
+        modLen = modLen * 16
+        int endPos = frameBytes.length - 4 - 4 // exclude suffix(4) and crc(4)
+        int startPos = endPos - modLen
+        byte[] section =  frameBytes[startPos..<endPos]
+        LOG.debug "section: [section: ${section.encodeHex().toString()}, bytes: ${section.length}, key: ${}]"
+
+        if (section.length != modLen) return null
+
+        return section
+    }
+
+    // Bytes 16-23 sit between the fixed 16-byte header and the first AES block.
+    // Firmware uses them to preserve 16-byte alignment before encryption starts.
+    // idx += 4
+
+    /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
+    if (frameBytes.length >= idx + 16 &&
+        (frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
+        (frameBytes[idx + 1] & 0xFF) == 0x2E) {         // '.'
+        idx += 16
+        LOG.debug "THE 3X VERSION HEADER IS HERE"
+    }
+
+    /* drop trailing CRC(4) + suffix(4) = 8 bytes */
+    int end = frameBytes.length - 8
+    if (end <= idx) return null  // malformed/truncated
+
+    return frameBytes[idx..<end]
+}
+
+String decryptFrame(String received, byte[] localKey) {
+    byte[] decoded = EncodingGroovyMethods.decodeHex(received)
+    byte[] payload = extractPayload(decoded)
+
+    LOG.debug "decryptFrame: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+
+    if (payload.length % 16 != 0) {
+        LOG.error "decryptFrame: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
         return null
     }
 
-    // remove header, crc and suffix
-    int from = (5 * 8)
-    int to = decodedBytes.length - (2 * 8) - 1
-    byte[] payloadBytes = decodedBytes[from..to]
-
-    // if version header is present then remove it
-    if (payloadBytes[0] == 0x33 && payloadBytes.length % 16 != 0) {
-        // 332e32000000000000000000000000
-        from = 30
-        to = payloadBytes.length - 1
-        payloadBytes = payloadBytes[from..to]
-    }
-
-    String payload = new String(payloadBytes, "ISO-8859-1")
-
-    // decrypt
-    byte[] hex = EncodingGroovyMethods.decodeHex(payload)
-    if (hex.length % 16 != 0) {
-        LOG.info "decrypt: using key=${new String(localKey)}, hex=${hex.encodeHex().toString()}, len=${hex.length}"
-        LOG.error "hex length must be divisible by 16 [payload: ${payload}, bytes: ${hex.length}]"
-        return null
-    }
-
-    byte[] decryptedBytes = decrypt(localKey, hex)
+    byte[] decryptedBytes = decrypt(localKey, payload)
     if (decryptedBytes == null) {
-        LOG.debug "unpackMessage: [payload: ${payload}]"
+        LOG.error "unpackMessage: decryptedBytes is null [payload: ${payload}]"
         return null
     }
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
+    LOG.debug "decryptFrame: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
     return decrypted
 }
+
+
+/**
+ * Split a concatenated Tuya-LAN hex stream into individual frame-hex strings.
+ *
+ * Behaviours handled
+ * ───────────────────
+ * 1. **Normal framing** – frames that start with “000055AA … 0000AA55 ”.
+ * 2. **Orphan suffix**  – when “0000AA55” noise appears *before* the next prefix,
+ *    it is skipped.
+ * 3. **Initial partial frame** – if the stream *begins* with data that
+ *    **doesn’t** have a prefix (a tail of an earlier transmission),
+ *    that slice is kept as frame 0 and returned unchanged.
+ *
+ * @param hex full stream (upper/lower case accepted)
+ * @return    List<String> with every discovered frame, in order of appearance
+ */
+List<String> splitTuyaFrames(String hex) {
+    hex = hex.toLowerCase()
+    final String PREFIX = "000055aa"
+    final String SUFFIX = "0000aa55"
+
+    List<String> frames = []
+
+    /* ── handle possible leading partial frame ─────────────────────────────── */
+    int firstPrefix = hex.indexOf(PREFIX)
+    if (firstPrefix == -1) {                          // no prefixes at all
+        if (hex) frames << hex                        // whole stream = single frame
+        return frames
+    }
+    if (firstPrefix > 0) {                            // data *before* first prefix
+        String partial = hex.substring(0, firstPrefix)
+        // LOG.debug "initial partial frame detected bytes=${partial.length() / 2}"
+        frames << partial
+    }
+
+    /* ── iterative extraction of proper frames ────────────────────────────── */
+    int cursor = firstPrefix
+    int idx    = (frames.isEmpty() ? 0 : 1)
+
+    while (cursor < hex.length()) {
+
+        /* skip any orphan suffix(es) appearing before the next real prefix */
+        int orphanSuffix = hex.indexOf(SUFFIX, cursor)
+        int nextPrefix   = hex.indexOf(PREFIX, cursor)
+
+        if (orphanSuffix != -1 && orphanSuffix < nextPrefix) {
+            // LOG.debug "orphan suffix at ${orphanSuffix}; skipping"
+            cursor = orphanSuffix + SUFFIX.length()
+            continue
+        }
+
+        /* locate the prefix we will parse now */
+        int start = nextPrefix
+        if (start == -1) break                        // nothing further
+
+        /* need at least the fixed 16-byte header to read msgLen */
+        if (start + 32 > hex.length()) break
+
+        int msgLen = Integer.parseUnsignedInt(
+                hex.substring(start + 24, start + 32), 16)
+
+        int frameHexLen = (16 + msgLen) * 2           // bytes → hex chars
+        if (start + frameHexLen > hex.length()) {
+            // LOG.debug "truncated frame from ${start}; expected ${frameHexLen} hex chars"
+            break                                     // incomplete trailing frame
+        }
+
+        String frameHex = hex.substring(start, start + frameHexLen)
+        frames << frameHex
+        // LOG.debug "frame ${idx} start=${start} bytes=${frameHexLen / 2} msgLen=${msgLen}"
+        idx++
+        cursor = start + frameHexLen                  // jump past extracted frame
+    }
+
+    return frames
+}
+
+
 
 String decodeHost(String host) {
     // Split the hex string into 4 octets (2 characters each)
