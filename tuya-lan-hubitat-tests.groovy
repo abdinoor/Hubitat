@@ -228,6 +228,23 @@ class EncryptTest extends GroovyTestCase {
         assertEquals(expected, payload)
     }
 
+    public void testTwoFrames() {
+        String hex = """CD0EEC3A611014862B8CA115EA762F58AB261659CFD506D9B6C75DC8C364CB10D4BA1F0CF83E1D1E4A00EBC166FA37EFCD5E8F8C0000AA55000055AA00000000000000080000005B00000000332E33000000000000E65700000001CD0EEC3A611014862B8CA115EA762F58FA9FDB82D8B26C98E361163AD2D0A1F1B9852AA1EC588BB41FBD635980F4622A08026D4602E54483B68918F1B375C4D1"""
+        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+
+        List<String> frames = splitTuyaFrames(hex)
+        assertEquals(2, frames.size())
+
+        String payload = unpackMessage(frames[0], localKey)
+        String expected = """{"dps":{"1":true},"t":1749806243}"""
+        assertEquals(expected, payload)
+
+        payload = unpackMessage(frames[1], localKey)
+        expected = """{"dps":{"1":true},"type":"query","t":1749806244}"""
+        assertEquals(expected, payload)
+
+    }
+
     /* -------------------------------------------------------
      * Helper methods
      */
@@ -515,7 +532,7 @@ String unpackMessage(String received, byte[] localKey) {
 
     List<String> frames = splitTuyaFrames(received)
     LOG.debug "unpackMessage: parsed ${frames.size()} frames"
-    return decryptFrame(frames[0], localKey)
+    return decryptPayload(frames[0], localKey)
 }
 
 /**
@@ -543,61 +560,50 @@ byte[] extractPayload(byte[] frameBytes) {
 
     int idx = 0
 
-    // if tuya prefix 0x000055AA remove prefix(4)+seq(4)+cmd(4)+msgLen(4)
-    int msgLen = 0
+    /* checking for prefix */
     if (frameBytes.length >= 4 &&
         (frameBytes[0] & 0xFF) == 0x00 &&
         (frameBytes[1] & 0xFF) == 0x00 &&
         (frameBytes[2] & 0xFF) == 0x55 &&
         (frameBytes[3] & 0xFF) == 0xAA)
     {
-        idx += 4 * 4
-        msgLen = ((frameBytes[12] & 0xFF) << 24) |
+        int msgLen = ((frameBytes[12] & 0xFF) << 24) |
                  ((frameBytes[13] & 0xFF) << 16) |
                  ((frameBytes[14] & 0xFF) << 8)  |
                  (frameBytes[15] & 0xFF)
+        idx = 20  // index 20 is where version header could be
+    } else {
+        int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[0..<end]
     }
-
-    if (msgLen > 0) {
-        int modLen = msgLen / 16
-        modLen = modLen * 16
-        int endPos = frameBytes.length - 4 - 4 // exclude suffix(4) and crc(4)
-        int startPos = endPos - modLen
-        byte[] section =  frameBytes[startPos..<endPos]
-        LOG.debug "section: [section: ${section.encodeHex().toString()}, bytes: ${section.length}, key: ${}]"
-
-        if (section.length != modLen) return null
-
-        return section
-    }
-
-    // Bytes 16-23 sit between the fixed 16-byte header and the first AES block.
-    // Firmware uses them to preserve 16-byte alignment before encryption starts.
-    // idx += 4
 
     /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
-    if (frameBytes.length >= idx + 16 &&
-        (frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
+    if ((frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
         (frameBytes[idx + 1] & 0xFF) == 0x2E) {         // '.'
-        idx += 16
-        LOG.debug "THE 3X VERSION HEADER IS HERE"
+        idx = 35
     }
 
-    /* drop trailing CRC(4) + suffix(4) = 8 bytes */
-    int end = frameBytes.length - 8
-    if (end <= idx) return null  // malformed/truncated
+    /* checking for suffix */
+    if ((frameBytes[frameBytes.length - 4] & 0xFF) == 0x00 &&
+        (frameBytes[frameBytes.length - 3] & 0xFF) == 0x00 &&
+        (frameBytes[frameBytes.length - 2] & 0xFF) == 0xAA &&
+        (frameBytes[frameBytes.length - 1] & 0xFF) == 0x55)
+    {
+        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[idx..<end]
+    }
 
-    return frameBytes[idx..<end]
+    return frameBytes[idx..<frameBytes.length]
 }
 
-String decryptFrame(String received, byte[] localKey) {
+String decryptPayload(String received, byte[] localKey) {
     byte[] decoded = EncodingGroovyMethods.decodeHex(received)
     byte[] payload = extractPayload(decoded)
 
-    LOG.debug "decryptFrame: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+    LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
 
     if (payload.length % 16 != 0) {
-        LOG.error "decryptFrame: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+        LOG.error "decryptPayload: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
         return null
     }
 
@@ -607,10 +613,9 @@ String decryptFrame(String received, byte[] localKey) {
         return null
     }
     String decrypted = new String(decryptedBytes, "ISO-8859-1")
-    LOG.debug "decryptFrame: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+    LOG.debug "decryptPayload: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
     return decrypted
 }
-
 
 /**
  * Split a concatenated Tuya-LAN hex stream into individual frame-hex strings.
@@ -642,7 +647,6 @@ List<String> splitTuyaFrames(String hex) {
     }
     if (firstPrefix > 0) {                            // data *before* first prefix
         String partial = hex.substring(0, firstPrefix)
-        // LOG.debug "initial partial frame detected bytes=${partial.length() / 2}"
         frames << partial
     }
 
@@ -657,7 +661,6 @@ List<String> splitTuyaFrames(String hex) {
         int nextPrefix   = hex.indexOf(PREFIX, cursor)
 
         if (orphanSuffix != -1 && orphanSuffix < nextPrefix) {
-            // LOG.debug "orphan suffix at ${orphanSuffix}; skipping"
             cursor = orphanSuffix + SUFFIX.length()
             continue
         }
@@ -674,21 +677,19 @@ List<String> splitTuyaFrames(String hex) {
 
         int frameHexLen = (16 + msgLen) * 2           // bytes → hex chars
         if (start + frameHexLen > hex.length()) {
-            // LOG.debug "truncated frame from ${start}; expected ${frameHexLen} hex chars"
+            String truncated = hex.substring(start, hex.length())
+            frames << truncated
             break                                     // incomplete trailing frame
         }
 
         String frameHex = hex.substring(start, start + frameHexLen)
         frames << frameHex
-        // LOG.debug "frame ${idx} start=${start} bytes=${frameHexLen / 2} msgLen=${msgLen}"
         idx++
         cursor = start + frameHexLen                  // jump past extracted frame
     }
 
     return frames
 }
-
-
 
 String decodeHost(String host) {
     // Split the hex string into 4 octets (2 characters each)
