@@ -20,6 +20,23 @@ class EncryptTest extends GroovyTestCase {
     static final int SUFFIX              = 0x0000AA55
     static final int HEADER              = 0x33
 
+    Map<String,String> dataValues = [:]
+
+    def getDataValue(name) {
+        if (dataValues.containsKey(name)) {
+            return dataValues[name]
+        }
+        if (name == "host") return "192.168.5.189"
+        if (name == "port") return "6668"
+        if (name == "localKey") return "X8#rf#xRr1dw)Bbn"
+        if (name == "gwId") return "eb9612d77425380d2efeup"
+        throw new Exception("""no data value for ${name}""")
+    }
+
+    def setDataValue(name, value) {
+        dataValues[name] = value
+    }
+
     public void testEncrypt() {
         def cmd = /{"devId":"eb9612d77425380d2efeup","uid":"eb9612d77425380d2efeup","t":"1732927690","dps":{"1":false}}/
 
@@ -163,7 +180,7 @@ class EncryptTest extends GroovyTestCase {
     public void testUnpackPayload() {
         String received = "000055aa000000050000000a0000004c00000000135934a4f9978652c6b877497629133e92e560df6cfb9d824053b700d01b4f8e0fa022b6098bcb2293338c41cd55f971d0e6a078803290a258e496b1e2641aedff24b99a0000aa55"
         byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
-        String payload = unpackMessage(received, localKey)
+        String payload = decryptPayload(received, localKey)
         String expected = '{"dps":{"1":false,"7":0,"14":"off","15":"none","18":""}}'
         assertEquals(expected, payload)
     }
@@ -198,8 +215,7 @@ class EncryptTest extends GroovyTestCase {
         String expected = "000055AA000000010000000A0000004C00000000325182449C4C728679B63CA9DC330182AB78D7BAE9AA1CB8F75FDF72C7E492528E93E31B747A8E1CDDAF7F2952BA29271CCCB39F8AF59055520A39F4E4997394B4DD9C390000AA55"
         assertEquals(expected, hex)
 
-        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
-        String payload = unpackMessage(hex, localKey)
+        String payload = decryptPayload(hex, "auVZSp}q*44HDEGC".getBytes())
         // LOG.debug payload
         expected = '{"dps":{"1":true,"2":620,"3":100,"4":"LED","102":0,"104":1}}'
         assertEquals(expected, payload)
@@ -211,35 +227,44 @@ class EncryptTest extends GroovyTestCase {
     }
 
     public void testMod16Message1() {
-        String hex = """325182449C4C728679B63CA9DC3301829913583B021F347B5D1CF4C3B65F315CC7CF0A35A03C3AB3D13B06262A3583CFEE9E6172CDEFDCE7CAF4F6A4D21CE2B5C565AD680000AA55000055AA00000000000000080000004B00000000332E3300000000000009B00000000107A32F20B9015D4E7A2997B740D699E6AD4397D8EB9627468D344175971AF491F15C4E70C9A37516353B10754CB7E27E"""
+        String message = """325182449C4C728679B63CA9DC3301829913583B021F347B5D1CF4C3B65F315CC7CF0A35A03C3AB3D13B06262A3583CFEE9E6172CDEFDCE7CAF4F6A4D21CE2B5C565AD680000AA55000055AA00000000000000080000004B00000000332E3300000000000009B00000000107A32F20B9015D4E7A2997B740D699E6AD4397D8EB9627468D344175971AF491F15C4E70C9A37516353B10754CB7E27E"""
 
-        byte[] localKey = "auVZSp}q*44HDEGC".getBytes()
-        String payload = unpackMessage(hex, localKey)
+        List<String> frames = splitTuyaFrames(message)
+        String payload = decryptPayload(frames[0], "auVZSp}q*44HDEGC".getBytes())
         String expected = """{"dps":{"1":true},"type":"query","t":1749549507}"""
         assertEquals(expected, payload)
     }
 
     public void testMod16Message2() {
-        String hex = """CD0EEC3A611014862B8CA115EA762F58AB261659CFD506D9B6C75DC8C364CB10D4BA1F0CF83E1D1E4A00EBC166FA37EFCD5E8F8C0000AA55000055AA00000000000000080000005B00000000332E33000000000000E65700000001CD0EEC3A611014862B8CA115EA762F58FA9FDB82D8B26C98E361163AD2D0A1F1B9852AA1EC588BB41FBD635980F4622A08026D4602E54483B68918F1B375C4D1"""
+        String message = """CD0EEC3A611014862B8CA115EA762F58AB261659CFD506D9B6C75DC8C364CB10D4BA1F0CF83E1D1E4A00EBC166FA37EFCD5E8F8C0000AA55000055AA00000000000000080000005B00000000332E33000000000000E65700000001CD0EEC3A611014862B8CA115EA762F58FA9FDB82D8B26C98E361163AD2D0A1F1B9852AA1EC588BB41FBD635980F4622A08026D4602E54483B68918F1B375C4D1"""
 
-        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
-        String payload = unpackMessage(hex, localKey)
+        List<String> frames = splitTuyaFrames(message)
+        String payload = decryptPayload(frames[0], "X8#rf#xRr1dw)Bbn".getBytes())
         String expected = """{"dps":{"1":true},"t":1749806243}"""
+        assertEquals(expected, payload)
+    }
+
+    public void testMod16Message3() {
+        String hex = """000055aa00000001000000070000000c00000000a505a9140000aa55"""
+
+        String payload = decryptPayload(hex, "X8#rf#xRr1dw)Bbn".getBytes())
+        String expected = """{"returnCode":0}"""
         assertEquals(expected, payload)
     }
 
     public void testTwoFrames() {
         String hex = """CD0EEC3A611014862B8CA115EA762F58AB261659CFD506D9B6C75DC8C364CB10D4BA1F0CF83E1D1E4A00EBC166FA37EFCD5E8F8C0000AA55000055AA00000000000000080000005B00000000332E33000000000000E65700000001CD0EEC3A611014862B8CA115EA762F58FA9FDB82D8B26C98E361163AD2D0A1F1B9852AA1EC588BB41FBD635980F4622A08026D4602E54483B68918F1B375C4D1"""
-        byte[] localKey = "X8#rf#xRr1dw)Bbn".getBytes()
 
         List<String> frames = splitTuyaFrames(hex)
         assertEquals(2, frames.size())
 
-        String payload = unpackMessage(frames[0], localKey)
+        def localKey = "X8#rf#xRr1dw)Bbn".getBytes()
+
+        String payload = decryptPayload(frames[0], localKey)
         String expected = """{"dps":{"1":true},"t":1749806243}"""
         assertEquals(expected, payload)
 
-        payload = unpackMessage(frames[1], localKey)
+        payload = decryptPayload(frames[1], localKey)
         expected = """{"dps":{"1":true},"type":"query","t":1749806244}"""
         assertEquals(expected, payload)
 
@@ -280,29 +305,22 @@ class EncryptTest extends GroovyTestCase {
 
         return message
 
-    def myHubAction = [
-        request,
-        hubitat.device.Protocol.LAN,
-        [
-            destinationAddress: getAddress(),
-            type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
-            encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
-            timeout: 1,
-            callback: "parse"
-        ]]
-    try {
-        // LOG.debug "sendHubCommand: ${myHubAction}"
-        sendHubCommand(myHubAction)
-    } catch (e) {
-        log.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
-    }
-}
-
-    def getDataValue(String name) {
-        if (name == "host") return "192.168.5.189"
-        if (name == "port") return "6668"
-        if (name == "localKey") return "X8#rf#xRr1dw)Bbn"
-        throw new Exception('no data value')
+        def myHubAction = [
+            request,
+            hubitat.device.Protocol.LAN,
+            [
+                destinationAddress: getAddress(),
+                type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
+                encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
+                timeout: 1,
+                callback: "parse"
+            ]]
+        try {
+            // LOG.debug "sendHubCommand: ${myHubAction}"
+            sendHubCommand(myHubAction)
+        } catch (e) {
+            log.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
+        }
     }
 
     def getAddress() {
@@ -523,16 +541,39 @@ byte[] pad(byte[] data, int blockSize = 16) {
     return paddedData
 }
 
-/* Unpack the message received from a device */
-String unpackMessage(String received, byte[] localKey) {
-    if (received == null) {
-        LOG.error "unpackMessage: received must not be null"
+/* callback from hubitat */
+def parse(message) {
+    LOG.debug "parse: gwId:${getDataValue('gwId')} ${message}"
+    try {
+        // String hex = parseMessage(message)
+        List<String> frames = splitTuyaFrames(message)
+        frames.eachWithIndex { f, i ->
+            LOG.debug "frame ${i}: ${f}"
+            String payload = decryptPayload(frames[i], getDataValue("localKey").getBytes())
+            LOG.debug "frame ${i}: ${payload}"
+            // updateStatus(payload)
+        }
+    } catch (e) {
+        LOG.exception("parse", e)
+    }
+}
+
+/* Parse the payload from device message received */
+String parseMessage(String message) {
+    LOG.debug "parseMessage: ${message}"
+    if (message == null) {
         return null
     }
 
-    List<String> frames = splitTuyaFrames(received)
-    LOG.debug "unpackMessage: parsed ${frames.size()} frames"
-    return decryptPayload(frames[0], localKey)
+    String field = "payload:"
+    int loc = message.indexOf(field) + field.length()
+
+    String payload = message.substring(loc, message.length())
+    if (payload.length() == 0) {
+        return null
+    }
+
+    return payload
 }
 
 /**
@@ -559,6 +600,7 @@ byte[] extractPayload(byte[] frameBytes) {
     if (!frameBytes) return null
 
     int idx = 0
+    int msgLen = 0
 
     /* checking for prefix */
     if (frameBytes.length >= 4 &&
@@ -567,14 +609,21 @@ byte[] extractPayload(byte[] frameBytes) {
         (frameBytes[2] & 0xFF) == 0x55 &&
         (frameBytes[3] & 0xFF) == 0xAA)
     {
-        int msgLen = ((frameBytes[12] & 0xFF) << 24) |
+        idx = 20  // index 20 is where version header could be
+        msgLen = ((frameBytes[12] & 0xFF) << 24) |
                  ((frameBytes[13] & 0xFF) << 16) |
                  ((frameBytes[14] & 0xFF) << 8)  |
                  (frameBytes[15] & 0xFF)
-        idx = 20  // index 20 is where version header could be
     } else {
         int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
         return frameBytes[0..<end]
+    }
+
+    // 12-byte messages are unencrypted Return-codes
+    if (msgLen == 12) {
+        idx = 16 // where payload starts on these messages
+        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[idx..<end]
     }
 
     /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
@@ -593,6 +642,7 @@ byte[] extractPayload(byte[] frameBytes) {
         return frameBytes[idx..<end]
     }
 
+
     return frameBytes[idx..<frameBytes.length]
 }
 
@@ -601,6 +651,11 @@ String decryptPayload(String received, byte[] localKey) {
     byte[] payload = extractPayload(decoded)
 
     LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+
+    // 4-byte messages are a Return-code and are not encrypted
+    if (payload.length == 4) {
+        return handleReturnCode(payload)
+    }
 
     if (payload.length % 16 != 0) {
         LOG.error "decryptPayload: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
@@ -691,6 +746,27 @@ List<String> splitTuyaFrames(String hex) {
     return frames
 }
 
+/**
+ * Evaluate a 4-byte Tuya return-code.
+ * rcBytes[3] is the actual code; the first three bytes are always 0.
+ */
+String handleReturnCode(byte[] rcBytes) {
+    if (rcBytes == null || rcBytes.length != 4) {
+        LOG.error "return-code length invalid (${rcBytes?.length ?: 0})"
+        return null
+    }
+
+    int code = rcBytes[3] & 0xFF  // 0 = success, non-zero = failure
+
+    if (code == 0) {
+        LOG.info "Tuya command acknowledged (0x00)"
+    } else {
+        LOG.warn "Tuya command rejected (0x${String.format('%02X', code)})"
+    }
+
+    return """{"returnCode":${code}}"""
+}
+
 String decodeHost(String host) {
     // Split the hex string into 4 octets (2 characters each)
     StringBuilder sb = new StringBuilder(15)
@@ -709,10 +785,11 @@ String decodePort(String port) {
 }
 
 private final Map LOG = [
-        debug    : { s -> logger.info(s) },
-        info     : { s -> logger.info(s) },
-        warn     : { s -> logger.info(s) },
-        error    : { s -> logger.info(s) }
+        debug    : { s -> logger.info("""DEBUG: ${s}""") },
+        info     : { s -> logger.info("""INFO: ${s}""") },
+        warn     : { s -> logger.info("""WARN: ${s}""") },
+        error    : { s -> logger.info("""ERROR: ${s}""") },
+        exception: { s, e -> logger.info("""ERROR: ${s}: ${e.message}""") }
     ].asImmutable()
 
 }
