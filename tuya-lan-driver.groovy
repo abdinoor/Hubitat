@@ -121,28 +121,30 @@ def setRelayState(onOff) {
     def dps = onOff ? "true" : "false"
     def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":${dps}}}/$
     sendCmd(CONTROL, payload)
-    sendEvent(name: "switch", value: (onOff) ? "on" : "off", type: "digital")
+    sendEvent(name: "switch", value: (onOff) ? "on" : "off")
 }
 
 /* Dimmer method */
 def setLevel(level, ramp = null, onTime = null ) {
-    level = checkLevel(level)
+    level = getLevel(level)
+    def hundreds = level * 10  // levels are set in 100s 50pct = 500
     LOG.desc "setLevel: [level: $level]"
     def timestamp = new Date().time.toString().substring(0, 10)
     def gwId = getDataValue("gwId")
-    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"2":${level * 10}}}/$
+    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":true,"2":${hundreds}}}/$
     sendCmd(CONTROL, payload)
     sendEvent(name: "level", value: level)
-    setRelayState(level > 0)  // turn on/off after setting level
+    sendEvent(name: "switch", value: "on")
 }
 
-def checkLevel(level) {
+/*  */
+def getLevel(level) {
     if (level != null && level >= 0 && level <= 100) {
         return level
     }
 
     def currValue = device.currentValue("level")
-    LOG.warn "checkLevel: Invalid level=${level}. Using level=${currValue}"
+    LOG.warn "getLevel: Invalid level=${level}. Using level=${currValue}"
     return currValue
 }
 
@@ -177,7 +179,13 @@ def parse(message) {
     LOG.debug "parse: gwId:${getDataValue('gwId')} ${message}"
     try {
         String hex = parseMessage(message)
+        if (hex == null) {
+            return
+        }
         List<String> frames = splitTuyaFrames(hex)
+        if (frames == null) {
+            return
+        }
         frames.eachWithIndex { f, i ->
             LOG.debug "frame ${i}: ${f}"
             String payload = decryptPayload(frames[i], getDataValue("localKey").getBytes())
@@ -191,9 +199,11 @@ def parse(message) {
 
 /* Parse the payload from device message received */
 String parseMessage(String message) {
+    LOG.debug "parseMessage: ${message}"
     if (message == null) {
         return null
     }
+
     String field = "payload:"
     int loc = message.indexOf(field) + field.length()
 
@@ -204,6 +214,102 @@ String parseMessage(String message) {
 
     byte[] decoded = payload?.decodeBase64()
     return new String(decoded, "ISO-8859-1")
+}
+
+/**
+ * Extract the encrypted payload (still AES-ECB, PKCS-padded) from a raw
+ * Tuya-LAN frame supplied as a byte array.
+ *
+ * Layout we expect in bytes
+ * ┌─────────────────────────────────────────────────────────────┐
+ * │  0- 3 :  prefix 0x000055AA                                  │
+ * │  4- 7 :  sequence number                                    │
+ * │  8-11 :  command                                            │
+ * │ 12-15 :  msgLen                                             │
+ * │ 16-23 :  (reserved / padding used by some firmwares)        │
+ * │ 24-39 :  optional 3.x version header (“3.3”, 12 bytes → 16) │
+ * │  ..   :  encrypted JSON payload                             │
+ * │  -8--5:  CRC32                                              │
+ * │  -4--1:  suffix 0x0000AA55                                  │
+ * └─────────────────────────────────────────────────────────────┘
+ *
+ * @param frameBytes  complete frame *including* prefix & suffix
+ * @return byte[]     encrypted payload portion only
+ */
+byte[] extractPayload(byte[] frameBytes) {
+    if (!frameBytes) return null
+
+    int idx = 0
+    int msgLen = 0
+
+    /* checking for prefix */
+    if (frameBytes.length >= 4 &&
+        (frameBytes[0] & 0xFF) == 0x00 &&
+        (frameBytes[1] & 0xFF) == 0x00 &&
+        (frameBytes[2] & 0xFF) == 0x55 &&
+        (frameBytes[3] & 0xFF) == 0xAA)
+    {
+        idx = 20  // index 20 is where version header could be
+        msgLen = ((frameBytes[12] & 0xFF) << 24) |
+                 ((frameBytes[13] & 0xFF) << 16) |
+                 ((frameBytes[14] & 0xFF) << 8)  |
+                 (frameBytes[15] & 0xFF)
+    } else {
+        int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[0..<end]
+    }
+
+    // 12-byte messages are unencrypted Return-codes
+    if (msgLen == 12) {
+        idx = 16 // where payload starts on these messages
+        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[idx..<end]
+    }
+
+    /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
+    if ((frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
+        (frameBytes[idx + 1] & 0xFF) == 0x2E) {         // '.'
+        idx = 35
+    }
+
+    /* checking for suffix */
+    if ((frameBytes[frameBytes.length - 4] & 0xFF) == 0x00 &&
+        (frameBytes[frameBytes.length - 3] & 0xFF) == 0x00 &&
+        (frameBytes[frameBytes.length - 2] & 0xFF) == 0xAA &&
+        (frameBytes[frameBytes.length - 1] & 0xFF) == 0x55)
+    {
+        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
+        return frameBytes[idx..<end]
+    }
+
+
+    return frameBytes[idx..<frameBytes.length]
+}
+
+String decryptPayload(String received, byte[] localKey) {
+    byte[] decoded = EncodingGroovyMethods.decodeHex(received)
+    byte[] payload = extractPayload(decoded)
+
+    LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+
+    // 4-byte messages are a Return-code and are not encrypted
+    if (payload.length == 4) {
+        return handleReturnCode(payload)
+    }
+
+    if (payload.length % 16 != 0) {
+        LOG.error "decryptPayload: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+        return null
+    }
+
+    byte[] decryptedBytes = decrypt(localKey, payload)
+    if (decryptedBytes == null) {
+        LOG.error "unpackMessage: decryptedBytes is null [payload: ${payload}]"
+        return null
+    }
+    String decrypted = new String(decryptedBytes, "ISO-8859-1")
+    LOG.debug "decryptPayload: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
+    return decrypted
 }
 
 /**
@@ -281,92 +387,42 @@ List<String> splitTuyaFrames(String hex) {
 }
 
 /**
- * Extract the encrypted payload (still AES-ECB, PKCS-padded) from a raw
- * Tuya-LAN frame supplied as a byte array.
- *
- * Layout we expect in bytes
- * ┌─────────────────────────────────────────────────────────────┐
- * │  0- 3 :  prefix 0x000055AA                                  │
- * │  4- 7 :  sequence number                                    │
- * │  8-11 :  command                                            │
- * │ 12-15 :  msgLen                                             │
- * │ 16-23 :  (reserved / padding used by some firmwares)        │
- * │ 24-39 :  optional 3.x version header (“3.3”, 12 bytes → 16) │
- * │  ..   :  encrypted JSON payload                             │
- * │  -8--5:  CRC32                                              │
- * │  -4--1:  suffix 0x0000AA55                                  │
- * └─────────────────────────────────────────────────────────────┘
- *
- * @param frameBytes  complete frame *including* prefix & suffix
- * @return byte[]     encrypted payload portion only
+ * Evaluate a 4-byte Tuya return-code.
+ * rcBytes[3] is the actual code; the first three bytes are always 0.
  */
-byte[] extractPayload(byte[] frameBytes) {
-    if (!frameBytes) return null
+String handleReturnCode(byte[] rcBytes) {
+    if (rcBytes == null || rcBytes.length != 4) {
+        LOG.error "return-code length invalid (${rcBytes?.length ?: 0})"
+        return null
+    }
 
-    int idx = 0
+    int code = rcBytes[3] & 0xFF  // 0 = success, non-zero = failure
 
-    /* checking for prefix */
-    if (frameBytes.length >= 4 &&
-        (frameBytes[0] & 0xFF) == 0x00 &&
-        (frameBytes[1] & 0xFF) == 0x00 &&
-        (frameBytes[2] & 0xFF) == 0x55 &&
-        (frameBytes[3] & 0xFF) == 0xAA)
-    {
-        int msgLen = ((frameBytes[12] & 0xFF) << 24) |
-                 ((frameBytes[13] & 0xFF) << 16) |
-                 ((frameBytes[14] & 0xFF) << 8)  |
-                 (frameBytes[15] & 0xFF)
-        idx = 20  // index 20 is where version header could be
+    if (code == 0) {
+        LOG.info "Tuya command acknowledged (0x00)"
     } else {
-        int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
-        return frameBytes[0..<end]
+        LOG.warn "Tuya command rejected (0x${String.format('%02X', code)})"
     }
 
-    /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
-    if ((frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
-        (frameBytes[idx + 1] & 0xFF) == 0x2E) {         // '.'
-        idx = 35
-    }
-
-    /* checking for suffix */
-    if ((frameBytes[frameBytes.length - 4] & 0xFF) == 0x00 &&
-        (frameBytes[frameBytes.length - 3] & 0xFF) == 0x00 &&
-        (frameBytes[frameBytes.length - 2] & 0xFF) == 0xAA &&
-        (frameBytes[frameBytes.length - 1] & 0xFF) == 0x55)
-    {
-        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
-        return frameBytes[idx..<end]
-    }
-
-    return frameBytes[idx..<frameBytes.length]
-}
-
-String decryptPayload(String received, byte[] localKey) {
-    byte[] decoded = EncodingGroovyMethods.decodeHex(received)
-    byte[] payload = extractPayload(decoded)
-
-    LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-
-    if (payload.length % 16 != 0) {
-        LOG.error "decryptPayload: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-        return null
-    }
-
-    byte[] decryptedBytes = decrypt(localKey, payload)
-    if (decryptedBytes == null) {
-        LOG.error "unpackMessage: decryptedBytes is null [payload: ${payload}]"
-        return null
-    }
-    String decrypted = new String(decryptedBytes, "ISO-8859-1")
-    LOG.debug "decryptPayload: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-    return decrypted
+    return """{"returnCode":${code}}"""
 }
 
 /* extract datapoints from json payload and update device status */
 def updateStatus(payload) {
-    // handle the incoming data points (DPs)
+    if (payload == null) {
+        LOG.warn "updateStatus: payload must not be null"
+        return
+    }
+
+
     def updStatus = [:]
     def response = new JsonSlurper().parseText(payload)
+    if (!response.containsKey('dps')) {
+        // no datapoints to update, probably a return-code message
+        return
+    }
+
+    // handle the incoming data points (DPs)
     if (response.dps['1'] != null) {
         def onOff = (response.dps['1']) ? "on" : "off"
         if (onOff != device.currentValue("switch")) {
