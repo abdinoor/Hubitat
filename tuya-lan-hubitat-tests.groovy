@@ -244,9 +244,8 @@ class EncryptTest extends GroovyTestCase {
         assertEquals(expected, payload)
     }
 
-    public void testMod16Message3() {
+    public void testReturnCodes() {
         String hex = """000055aa00000001000000070000000c00000000a505a9140000aa55"""
-
         String payload = decryptPayload(hex, "X8#rf#xRr1dw)Bbn".getBytes())
         String expected = """{"returnCode":0}"""
         assertEquals(expected, payload)
@@ -593,12 +592,13 @@ String parseMessage(String message) {
  * │  -4--1:  suffix 0x0000AA55                                  │
  * └─────────────────────────────────────────────────────────────┘
  *
- * @param frameBytes  complete frame *including* prefix & suffix
- * @return byte[]     encrypted payload portion only
+ * @param frameBytes    complete frame *including* prefix & suffix
+ * @return Map with payloadBytes and cmdCode
  */
-byte[] extractPayload(byte[] frameBytes) {
+Map extractPayload(byte[] frameBytes) {
     if (!frameBytes) return null
 
+    Map response = [payloadBytes: null, cmdCode: 0]
     int idx = 0
     int msgLen = 0
 
@@ -614,16 +614,23 @@ byte[] extractPayload(byte[] frameBytes) {
                  ((frameBytes[13] & 0xFF) << 16) |
                  ((frameBytes[14] & 0xFF) << 8)  |
                  (frameBytes[15] & 0xFF)
+
+        response.command = ((frameBytes[4] & 0xFF) << 24) |
+                           ((frameBytes[5] & 0xFF) << 16) |
+                           ((frameBytes[6] & 0xFF) << 8)  |
+                           (frameBytes[7] & 0xFF)
     } else {
         int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
-        return frameBytes[0..<end]
+        response['payloadBytes'] = frameBytes[0..<end]
+        return response
     }
 
     // 12-byte messages are unencrypted Return-codes
     if (msgLen == 12) {
         idx = 16 // where payload starts on these messages
         int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
-        return frameBytes[idx..<end]
+        response['payloadBytes'] = frameBytes[idx..<end]
+        return response
     }
 
     /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
@@ -639,22 +646,24 @@ byte[] extractPayload(byte[] frameBytes) {
         (frameBytes[frameBytes.length - 1] & 0xFF) == 0x55)
     {
         int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
-        return frameBytes[idx..<end]
+        response['payloadBytes'] = frameBytes[idx..<end]
+        return response
     }
 
-
-    return frameBytes[idx..<frameBytes.length]
+    response['payloadBytes'] = frameBytes[idx..<frameBytes.length]
+    return response
 }
 
 String decryptPayload(String received, byte[] localKey) {
     byte[] decoded = EncodingGroovyMethods.decodeHex(received)
-    byte[] payload = extractPayload(decoded)
+    Map response = extractPayload(decoded)
+    byte[] payload = response['payloadBytes']
 
     LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
 
     // 4-byte messages are a Return-code and are not encrypted
     if (payload.length == 4) {
-        return handleReturnCode(payload)
+        return handleReturnCode(response)
     }
 
     if (payload.length % 16 != 0) {
@@ -750,18 +759,20 @@ List<String> splitTuyaFrames(String hex) {
  * Evaluate a 4-byte Tuya return-code.
  * rcBytes[3] is the actual code; the first three bytes are always 0.
  */
-String handleReturnCode(byte[] rcBytes) {
-    if (rcBytes == null || rcBytes.length != 4) {
-        LOG.error "return-code length invalid (${rcBytes?.length ?: 0})"
+String handleReturnCode(Map response) {
+    if (!response) return
+
+    if (!response['payloadBytes'] instanceof Byte) {
+        LOG.error "return-code must be a single byte"
         return null
     }
 
-    int code = rcBytes[3] & 0xFF  // 0 = success, non-zero = failure
+    int code = response['payloadBytes'][3] & 0xFF  // 0 = success, non-zero = failure
 
     if (code == 0) {
-        LOG.info "Tuya command acknowledged (0x00)"
+        LOG.info "Tuya command ${response.command} acknowledged (0x00)"
     } else {
-        LOG.warn "Tuya command rejected (0x${String.format('%02X', code)})"
+        LOG.warn "Tuya command ${response.command} rejected (0x${String.format('%02X', code)})"
     }
 
     return """{"returnCode":${code}}"""
