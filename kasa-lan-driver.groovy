@@ -263,8 +263,6 @@ def handleCommsError() {
 		def count = state.errorCount + 1
 		state.errorCount = count
 		def retry = true
-		def cmdData = new JSONObject(lastCmd)
-		def cmdBody = parseJson(cmdData.cmdBody.toString())
 		logData << [count: count, command: lastCmd]
 		switch (count) {
 			case 1:
@@ -328,10 +326,16 @@ def parseUdp(message) {
 			return
 		}
 	}
-	def cmdResp = new JsonSlurper().parseText(clearResp)
-	LOG.debug "parseUdp: ${cmdResp}"
-	distResp(cmdResp)
-	setCommsError(false)
+	try {
+		def cmdResp = new JsonSlurper().parseText(clearResp)
+		LOG.debug "parseUdp: ${cmdResp}"
+		distResp(cmdResp)
+		setCommsError(false)
+	} catch (e) {
+		LOG.warn "parseUdp: JSON parse failed [reason: ${e?.message}]"
+		LOG.debug "parseUdp: [messageData: ${clearResp}]"
+		return
+	}
 }
 
 def distResp(response) {
