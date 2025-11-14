@@ -13,7 +13,7 @@ metadata {
 	definition (name: "Tapo KLAP LAN Device",
 				namespace: "klap",
 				author: "Dan Abdinoor",
-				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/klap-lan-driver.groovy'
+				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tapo-klap-lan-driver.groovy'
 			   ) {
         capability "Switch"
         capability "SwitchLevel"
