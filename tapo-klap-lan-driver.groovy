@@ -21,7 +21,6 @@ metadata {
 		attribute "connection", "string"
 		attribute "commsError", "string"
 		attribute "deviceIP", "string"
-		attribute "deviceStatus", "string"
 	}
 
 	preferences {
@@ -66,6 +65,7 @@ def installed() {
 
 def updated() {
 	unschedule()
+	state.remove("deviceStatus")
 	removeDataValue("driverVersion")
 	refresh()
 
@@ -97,7 +97,7 @@ def refresh() {
 	Map result = sendKlapRequest("get_device_info", [:])
 	if (result && result.error_code == 0) {
 		def status = result.result ?: [:]
-		setDeviceStatus(status)
+		updateSwitchState(status)
 		setCommsError(false)
 	} else {
 		LOG.warn "refresh: Failed to fetch device info${result?.error_code ? " (error_code=${result.error_code})" : ""}"
@@ -135,34 +135,19 @@ def getDeviceAddr() {
 	return getDataValue("deviceIP")
 }
 
-def setDeviceStatus(status) {
-	LOG.debug "setDeviceStatus status: ${status}"
-	def logData = [:]
-	
+def updateSwitchState(status) {
+	LOG.debug "updateSwitchState status: ${status}"
 	if (status.device_on != null) {
 		String switchVal = status.device_on ? "on" : "off"
 		if (switchVal != device.currentValue("switch")) {
 			sendEvent(name: "switch", value: switchVal, descriptionText: "${device.displayName} switch is ${switchVal}")
-			logData << [switch: switchVal]
 		}
 	}
 	if (status.brightness != null) {
 		Integer levelValue = status.brightness as Integer
 		if (levelValue != device.currentValue("level")) {
 			sendEvent(name: "level", value: levelValue, descriptionText: "${device.displayName} level is ${levelValue}")
-			logData << [level: levelValue]
 		}
-	}
-	
-	// Convert status to JSON string for display
-	String statusJson = JsonOutput.toJson(status)
-	if (statusJson != device.currentValue("deviceStatus")) {
-		sendEvent(name: "deviceStatus", value: statusJson, descriptionText: "Device status updated")
-		logData << [deviceStatus: "updated"]
-	}
-
-	if (logData.size() > 0) {
-		LOG.desc "status changed: ${logData}"
 	}
 }
 
