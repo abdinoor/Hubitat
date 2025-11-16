@@ -11,7 +11,7 @@ import javax.crypto.spec.SecretKeySpec
 
 metadata {
 	definition (name: "Tapo KLAP LAN Device",
-				namespace: "klap",
+				namespace: "tapo",
 				author: "Dan Abdinoor",
 				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tapo-klap-lan-driver.groovy'
 			   ) {
