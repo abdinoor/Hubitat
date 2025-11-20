@@ -66,6 +66,7 @@ def installed() {
 def updated() {
 	unschedule()
 	state.remove("deviceStatus")
+	state.remove("klapSession")
 	removeDataValue("driverVersion")
 	refresh()
 
