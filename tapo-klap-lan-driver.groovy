@@ -821,90 +821,103 @@ private boolean ensureKlapSession() {
 }
 
 private Map sendKlapRequest(String method, Map params) {
-	if (!ensureKlapSession()) {
-		LOG.warn "sendKlapRequest: KLAP session unavailable"
-		return null
-	}
-	
-	Map session = getKlapSession()
-	
-	// Create request payload (as JSON string)
-	Map payload = [
-		method: method,
-		requestTimeMils: now(),
-		terminalUUID: session.terminalUuid ?: getTerminalUuid(),
-		params: params
-	]
-	
-	// Encrypt payload
-	String payloadJson = JsonOutput.toJson(payload)
-	def encryptedResult = klapEncrypt(payloadJson.getBytes("UTF-8"))
-	byte[] encryptedData = encryptedResult[0]
-	int requestSeq = encryptedResult[1]
-	
-	try {
-		String cookieValue = session.cookie
-		if (cookieValue && cookieValue.contains(":")) {
-			cookieValue = cookieValue.split(":", 2)[1].trim()
+	// Allow one retry for session errors (e.g., HTTP 403)
+	for (int i = 0; i < 3; i++) {
+		if (!ensureKlapSession()) {
+			LOG.warn "sendKlapRequest: KLAP session unavailable on attempt ${i + 1}"
+			return null
 		}
 		
-		String requestUrl = "http://${getDeviceAddr()}/app/request?seq=${requestSeq}"
-		def syncResult = [waiting: true, completed: false]
+		Map session = getKlapSession()
 		
-		Map headers = [:]
-		if (cookieValue) {
-			headers.Cookie = cookieValue
-		}
-		headers['Content-Type'] = 'application/octet-stream'
-		
-		Map httpParams = [
-			uri: requestUrl,
-			requestContentType: 'application/octet-stream',
-			contentType: 'application/octet-stream',
-			timeout: 5,
-			body: encryptedData,
-			headers: headers
+		// Create request payload (as JSON string)
+		Map payload = [
+			method: method,
+			requestTimeMils: now(),
+			terminalUUID: session.terminalUuid ?: getTerminalUuid(),
+			params: params
 		]
 		
-		asynchttpPost('klapRequestCallback', httpParams, [result: syncResult, seq: requestSeq])
+		// Encrypt payload
+		String payloadJson = JsonOutput.toJson(payload)
+		def encryptedResult = klapEncrypt(payloadJson.getBytes("UTF-8"))
+		byte[] encryptedData = encryptedResult[0]
+		int requestSeq = encryptedResult[1]
 		
-		int waitCount = 0
-		while (syncResult.waiting && waitCount < 50) {
-			pauseExecution(100)
-			waitCount++
-		}
-		
-		if (syncResult.waiting) {
-			LOG.warn "sendKlapRequest: timeout waiting for response"
+		try {
+			String cookieValue = session.cookie
+			if (cookieValue && cookieValue.contains(":")) {
+				cookieValue = cookieValue.split(":", 2)[1].trim()
+			}
+			
+			String requestUrl = "http://${getDeviceAddr()}/app/request?seq=${requestSeq}"
+			def syncResult = [waiting: true, completed: false]
+			
+			Map headers = [:]
+			if (cookieValue) {
+				headers.Cookie = cookieValue
+			}
+			headers['Content-Type'] = 'application/octet-stream'
+			
+			Map httpParams = [
+				uri: requestUrl,
+				requestContentType: 'application/octet-stream',
+				contentType: 'application/octet-stream',
+				timeout: 5,
+				body: encryptedData,
+				headers: headers
+			]
+			
+			asynchttpPost('klapRequestCallback', httpParams, [result: syncResult, seq: requestSeq])
+			
+			int waitCount = 0
+			while (syncResult.waiting && waitCount < 50) {
+				pauseExecution(100)
+				waitCount++
+			}
+			
+			if (syncResult.waiting) {
+				LOG.warn "sendKlapRequest: timeout waiting for response on attempt ${i + 1}"
+				return null
+			}
+			
+			// Check for 403 Forbidden and retry if it's the first attempt
+			if (syncResult.status == 403 && i == 0) {
+				LOG.info "sendKlapRequest: received 403 Forbidden, session may be invalid. Clearing session and retrying."
+				state.remove("klapSession")
+				continue // Retry the loop
+			}
+			
+			if (!syncResult.completed) {
+				LOG.warn "sendKlapRequest: request failed with status ${syncResult.status} on attempt ${i + 1}"
+				return null
+			}
+			
+			byte[] encryptedResponse = decodeIfBase64(syncResult.data)
+			if (!encryptedResponse) {
+				LOG.warn "sendKlapRequest: empty response body on attempt ${i + 1}"
+				return null
+			}
+			
+			byte[] decryptedBytes = klapDecrypt(encryptedResponse, requestSeq)
+			if (!decryptedBytes) {
+				LOG.warn "sendKlapRequest: failed to decrypt response on attempt ${i + 1}"
+				return null
+			}
+			
+			String resultJson = new String(decryptedBytes, "UTF-8")
+			JsonSlurper slurper = new JsonSlurper()
+			Map parsed = slurper.parseText(resultJson)
+			return parsed // Success
+			
+		} catch (Exception e) {
+			LOG.warn "sendKlapRequest: exception during request on attempt ${i + 1} [error: ${e.message}]"
 			return null
 		}
-		
-		if (!syncResult.completed) {
-			LOG.warn "sendKlapRequest: request failed with status ${syncResult.status}"
-			return null
-		}
-		
-		byte[] encryptedResponse = decodeIfBase64(syncResult.data)
-		if (!encryptedResponse) {
-			LOG.warn "sendKlapRequest: empty response body"
-			return null
-		}
-		
-		byte[] decryptedBytes = klapDecrypt(encryptedResponse, requestSeq)
-		if (!decryptedBytes) {
-			LOG.warn "sendKlapRequest: failed to decrypt response"
-			return null
-		}
-		
-		String resultJson = new String(decryptedBytes, "UTF-8")
-		JsonSlurper slurper = new JsonSlurper()
-		Map parsed = slurper.parseText(resultJson)
-		return parsed
-		
-	} catch (Exception e) {
-		LOG.warn "sendKlapRequest: exception during request [error: ${e.message}]"
-		return null
 	}
+	
+	LOG.warn "sendKlapRequest: command failed after retry."
+	return null // If we exit the loop
 }
 
 // ---------------------------------------------------------------------------
