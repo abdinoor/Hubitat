@@ -68,6 +68,7 @@ def initialize() {
     state.session = null
     state.handshake = null
     state.retryAfter = 0
+    state.authBlocked = false
     state.serial = ((state.serial ?: 0) as Long) + 1L
     sendEvent(name: "connection", value: "TPAP LAN")
     try {
@@ -99,6 +100,10 @@ String configuredHost() {
     return host
 }
 void enqueue(String method, Map params) {
+    if (state.authBlocked) {
+        if (method != "get_device_info") log.warn "TPAP authentication is blocked; correct credentials and use Reset Session"
+        return
+    }
     if (now() < ((state.retryAfter ?: 0) as Long)) {
         if (method != "get_device_info") log.warn "TPAP command rejected during connection-error cooldown"
         return
@@ -159,7 +164,7 @@ def tpapResponse(response, Map token) {
         if (token.stage == "secure" || token.stage == "verify") {
             byte[] plaintext = decryptFrame(state.session, binaryBody(response.getData()), state.active.seq as Long)
             Map reply = new JsonSlurper().parseText(new String(plaintext, "UTF-8")) as Map
-            check(reply.error_code instanceof Number && reply.error_code == 0, "Device command error " + numericError(reply.error_code))
+            checkReply(reply, "Device command")
             if (token.stage == "secure" && state.active.command.method == "set_device_info") {
                 sendSecure([method: "get_device_info", params: [:]], "verify")
             } else {
@@ -177,18 +182,28 @@ def tpapResponse(response, Map token) {
             return
         }
         Map reply = response.getJson() as Map
-        check(reply.error_code instanceof Number && reply.error_code == 0, token.stage + " error " + numericError(reply.error_code))
+        checkReply(reply, token.stage)
         check(reply.result instanceof Map, "Missing handshake result")
         Map result = reply.result
         if (token.stage == "discover") {
-            check(result.tpap instanceof Map, "Device does not advertise TPAP (it may be in KLAP compatibility mode)")
-            check(result.tpap.tls == 0, "Only HTTP TPAP (tls=0) supported; TLS is not downgraded")
-            check(result.tpap.pake instanceof List && result.tpap.pake.contains(2), "Device does not support user-password PAKE")
-            int port = (result.tpap.port ?: 80) as Integer
+            Map tpap
+            if (result.tpap instanceof Map) {
+                tpap = result.tpap
+            } else {
+                // S505D compatibility mode hides TPAP metadata, but still accepts
+                // pake_register. Preference is not a protocol capability switch.
+                check(!result.containsKey("tpap") && result.sub_method == "discover" && result.tpap_preferred == false,
+                      "Device returned no usable TPAP discovery information")
+                // Probe only our supported suite; never disable DAC on this path.
+                tpap = [tls: 0, port: 80, pake: [2], dac: 1]
+            }
+            check(tpap.tls == 0, "Only HTTP TPAP (tls=0) supported; TLS is not downgraded")
+            check(tpap.pake instanceof List && tpap.pake.contains(2), "Device does not support user-password PAKE")
+            int port = (tpap.port ?: 80) as Integer
             check(port > 0 && port <= 65535, "Invalid TPAP port")
             byte[] random = randomBytes(32)
-            state.handshake = [port: port, mac: result.mac, dac: result.tpap.dac == 1, random: b64(random)]
-            String user = result.tpap.user_hash_type == 1 ? hex(hash("SHA-256", utf8("admin"))).toUpperCase() : hex(hash("MD5", utf8("admin")))
+            state.handshake = [port: port, mac: result.mac, dac: tpap.dac == 1, random: b64(random)]
+            String user = tpap.user_hash_type == 1 ? hex(hash("SHA-256", utf8("admin"))).toUpperCase() : hex(hash("MD5", utf8("admin")))
             loginStep("register", [sub_method: "pake_register", username: user, user_random: b64(random),
                 cipher_suites: [1], encryption: ["aes_128_ccm"], passcode_type: "userpw", stok: null])
         } else if (token.stage == "register") {
@@ -220,6 +235,13 @@ def tpapResponse(response, Map token) {
     } catch (Exception e) { failSafe(e) }
 }
 String numericError(Object code) { code instanceof Number ? code.toString() : "(missing)" }
+void checkReply(Map reply, String stage) {
+    if (reply.error_code == -2203 || reply.error_code == -2101 || reply.error_code == -1501) {
+        state.authBlocked = true
+        check(false, "Authentication/access rejected (" + numericError(reply.error_code) + "); check device credentials, then use Reset Session. Automatic login retries stopped")
+    }
+    check(reply.error_code instanceof Number && reply.error_code == 0, stage + " error " + numericError(reply.error_code))
+}
 void sendSecure(Map command, String stage = "secure") {
     Map session = state.session
     long seq = session.seq as Long
@@ -255,7 +277,7 @@ void fail(String reason) {
     unschedule("requestTimedOut")
     sendEvent(name: "commsError", value: "true")
     sendEvent(name: "lastError", value: reason)
-    log.warn "TPAP: " + reason + "; no automatic command replay (5-minute cooldown)"
+    log.warn "TPAP: " + reason + (state.authBlocked ? "; waiting for credential correction/Reset Session" : "; no automatic command replay (5-minute cooldown)")
 }
 
 // Cryptographic helpers are pure functions, tested independently of Hubitat.

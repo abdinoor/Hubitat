@@ -163,6 +163,28 @@ test("Queue bounded, timeout clears secrets and drops commands without replay") 
     driver.tpapResponse(response([:], 403), oldToken)
     assert state.active
 }
+test("KLAP-preferred discovery still tries TPAP and requires DAC") {
+    driver.initialize(); requests.clear(); events.clear(); driver.refresh()
+    driver.tpapResponse(response([error_code: 0, result: [sub_method: "discover", tpap_preferred: false]]), requests.last().token)
+    assert requests.last().token.stage == "register"
+    assert state.handshake.dac == true && state.handshake.port == 80
+    state.handshake.random = v.userRandom
+    driver.metaClass.randomScalar = { -> new BigInteger(v.x) }
+    driver.tpapResponse(response([error_code: 0, result: v.register]), requests.last().token)
+    Map share = new JsonSlurper().parseText(requests.last().params.body)
+    assert requests.last().token.stage == "share" && share.params.dac_nonce
+    driver.tpapResponse(response([error_code: 0, result: [dev_confirm: v.devConfirm, sessionId: "offline", start_seq: 1]]), requests.last().token)
+    assert events.lastError == "Device advertised DAC but omitted its proof"
+    assert state.session == null && events.commsError == "true"
+    driver.metaClass = null
+}
+test("Absent or malformed discovery cannot silently enter compatibility mode") {
+    [[:], [sub_method: "discover", tpap_preferred: true], [sub_method: "discover", tpap_preferred: false, tpap: null]].each { result ->
+        driver.initialize(); requests.clear(); events.clear(); driver.refresh()
+        driver.tpapResponse(response([error_code: 0, result: result]), requests.last().token)
+        assert requests.size() == 1 && state.active == null && events.commsError == "true"
+    }
+}
 test("Serialized session increments sequence, publishes only authenticated read-back") {
     driver.initialize()
     state.session = [key: v.key, nonce: v.nonce, host: settings.deviceIp,
@@ -209,6 +231,23 @@ test("Authentication failure drops all queued work and never publishes success")
     driver.tpapResponse(response([error_code: -1501]), requests.last().token)
     assert events.commsError == "true" && !events.containsKey("switch")
     assert state.queue.empty && state.session == null && state.handshake == null
+    assert state.authBlocked
+    clock += 3600000L
+    int count = requests.size()
+    driver.poll(); driver.on()
+    assert requests.size() == count : "Authentication failure must not retry after cooldown"
+    driver.resetSession()
+    assert !state.authBlocked
+}
+test("TPAP access and lockout errors stop further logins until explicit reset") {
+    [-2203, -2101].each { code ->
+        driver.initialize(); requests.clear(); driver.refresh()
+        driver.tpapResponse(response([error_code: code]), requests.last().token)
+        assert state.authBlocked && events.lastError.contains(code.toString())
+        clock += 3600000L
+        driver.poll()
+        assert requests.size() == 1
+    }
 }
 test("Incorrect device confirmation never creates a usable session") {
     driver.initialize(); events.clear(); requests.clear()

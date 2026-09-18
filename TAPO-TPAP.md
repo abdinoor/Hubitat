@@ -26,16 +26,25 @@ Unsupported modes fail explicitly. This driver does not fall back to KLAP.
 
 ### Verification on 2026-09-18
 
-The real device initially accepted TPAP discovery/registration and selected the
-mode above. By the time the full-driver read-only test ran, it had changed to
-KLAP: discovery returned tpap_preferred=false with no TPAP parameters, and UDP
-discovery advertised KLAP v2. The new driver correctly stopped without sending a
-power or level command.
+The real device accepted TPAP registration and selected the mode above, including
+while HTTP discovery returned tpap_preferred=false with no TPAP parameters and
+UDP discovery advertised KLAP v2. The initial implementation incorrectly treated
+that preference as proof that TPAP was unavailable. The driver now attempts the
+supported TPAP registration in this specific compatibility-mode response, with
+DAC proof required. It does not downgrade a device that explicitly advertises TLS.
+
+The corrected read-only hardware test, including a run from Hubitat itself,
+reaches pake_share, where the device returns -2203 (authentication/access rejection).
+Hubitat then sets authBlocked and stops subsequent automatic login attempts.
+An independent python-kasa KLAP
+test also rejects the supplied credentials with a challenge mismatch. This
+does not establish whether the cause is stale device credentials or additional
+firmware-specific authentication requirements. No light commands were sent.
 
 **A complete TPAP hardware session has not been verified.** The driver now
 compiles and saves successfully in Hubitat's Drivers Code editor. Sandbox fixes
 replace System.arraycopy with indexed copies and avoid array-typed closure
-parameters and array class expressions. No device was assigned to the new driver.
+parameters and array class expressions.
 Local Groovy 2.4.21/Java 8 and Groovy 4/Java 23 tests validate the algorithm and
 callback workflow; live binary HTTP handling and runtime performance still need
 validation on a TPAP-enabled device.
@@ -53,9 +62,9 @@ validation on a TPAP-enabled device.
    and sets commsError=false. Check lastError if it fails.
 5. Test physical on/off/brightness only once Refresh succeeds.
 
-The switch must actually advertise TPAP. If it advertises KLAP, use a KLAP driver;
-do not change a global Tapo compatibility setting just to test this driver,
-because doing so can affect other devices.
+The switch must accept TPAP registration, but may advertise KLAP as preferred.
+There is no need to change a global Tapo compatibility setting just to test this
+driver; doing so can affect other devices.
 
 Saving preferences/Initialize/Reset Session clears pending commands and session
 keys and schedules a read. Poll interval defaults to 300 seconds, bounded to
@@ -69,7 +78,10 @@ keys and schedules a read. Poll interval defaults to 300 seconds, bounded to
 - There is no busy-wait loop around asynchronous HTTP calls. Each request has an
   8-second HTTP timeout and a 20-second watchdog.
 - Failed/ambiguous commands are **not replayed**. Failure drops pending work and
-  starts a five-minute cooldown, including for authentication failures.
+  starts a five-minute cooldown. Authentication/access/lockout errors (-1501,
+  -2101, -2203) instead block further login attempts until credentials are
+  corrected and Save Preferences/Reset Session/Initialize is used. Do not keep
+  resetting the session with rejected credentials: device-side lockout can result.
 - Session keys/nonces are base64 strings so they survive Hubitat state JSON
   serialization. A nonce is reserved before transmission. Sessions are discarded
   after ten minutes or sequence exhaustion; nonce counters never wrap.
