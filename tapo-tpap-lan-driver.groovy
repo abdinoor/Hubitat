@@ -101,7 +101,7 @@ String configuredHost() {
 }
 void enqueue(String method, Map params) {
     if (state.authBlocked) {
-        if (method != "get_device_info") log.warn "TPAP authentication is blocked; correct credentials and use Reset Session"
+        if (method != "get_device_info") log.warn "TPAP authentication is blocked; resolve authentication compatibility/settings before Reset Session"
         return
     }
     if (now() < ((state.retryAfter ?: 0) as Long)) {
@@ -175,7 +175,8 @@ def tpapResponse(response, Map token) {
                     check(wanted.every { k, v -> reply.result[k] == v }, "Command acknowledged but read-back did not match")
                 }
                 sendEvent(name: "commsError", value: "false")
-                sendEvent(name: "lastError", value: "")
+                // Hubitat does not persist an empty string as a cleared state.
+                sendEvent(name: "lastError", value: "none")
                 state.active = null
                 runInMillis(50, "drainQueue")
             }
@@ -238,7 +239,7 @@ String numericError(Object code) { code instanceof Number ? code.toString() : "(
 void checkReply(Map reply, String stage) {
     if (reply.error_code == -2203 || reply.error_code == -2101 || reply.error_code == -1501) {
         state.authBlocked = true
-        check(false, "Authentication/access rejected (" + numericError(reply.error_code) + "); check device credentials, then use Reset Session. Automatic login retries stopped")
+        check(false, "Authentication/access rejected during " + stage + " (" + numericError(reply.error_code) + "); credentials or protocol compatibility require investigation. Automatic login retries stopped")
     }
     check(reply.error_code instanceof Number && reply.error_code == 0, stage + " error " + numericError(reply.error_code))
 }
@@ -277,7 +278,7 @@ void fail(String reason) {
     unschedule("requestTimedOut")
     sendEvent(name: "commsError", value: "true")
     sendEvent(name: "lastError", value: reason)
-    log.warn "TPAP: " + reason + (state.authBlocked ? "; waiting for credential correction/Reset Session" : "; no automatic command replay (5-minute cooldown)")
+    log.warn "TPAP: " + reason + (state.authBlocked ? "; waiting for explicit Reset Session after investigation" : "; no automatic command replay (5-minute cooldown)")
 }
 
 // Cryptographic helpers are pure functions, tested independently of Hubitat.
@@ -419,8 +420,11 @@ List pointMultiply(BigInteger scalar, List point) {
 String credentialString(Map register) {
     Map extra = register.extra_crypt instanceof Map ? register.extra_crypt : [:]
     if (!extra) return settings.tpapUsername + "/" + settings.tpapPassword
-    check(extra.type == "password_shadow" && extra.params?.passwd_id == 4, "Unsupported password transform (requires S505D passwd_id=4)")
-    return settings.tpapPassword.toString() // Never trim or normalize passwords.
+    check(extra.type == "password_shadow", "Unsupported password transform")
+    check(extra.params?.passwd_id in [2, 4], "Unsupported password shadow mode")
+    // Mode 4 consumes the local-control secret, provisioned as SHA-1 by Tapo.
+    // Verified on S505D firmware 1.4.0; never trim or normalize the password.
+    return hex(hash("SHA-1", utf8(settings.tpapPassword.toString())))
 }
 Map makeShare(Map register, byte[] userRandom, String credentials, BigInteger ephemeral) {
     check(register.cipher_suites == 1 && register.encryption == "aes_128_ccm", "Unsupported negotiated TPAP suite")

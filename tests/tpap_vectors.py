@@ -37,7 +37,9 @@ x, y = 0x123456789abcdef, 0xfedcba987654321
 g, order = NIST256p.generator, NIST256p.order
 m = point("02886e2f97ace46e55ba9dd7242579f2993b64e16ef3dcab95afd497333d8fa12f")
 n = point("03d8bbd6c639c62937b04d997f38c3770719c629d7014d49a24b4f98baa1292b49")
-derived = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 3000, 80)
+credentials = hashlib.sha1(password.encode()).hexdigest()
+raw_pbkdf2 = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, 3000, 80)
+derived = hashlib.pbkdf2_hmac("sha256", credentials.encode(), salt, 3000, 80)
 w, h = int.from_bytes(derived[:40], "big") % order, int.from_bytes(derived[40:], "big") % order
 # Build server share and server-side Z,V, independently of client subtraction.
 r, l = y * g + w * n, x * g + w * m
@@ -74,14 +76,14 @@ leaf_cert = cert(leaf_name, root_name, leaf_key.public_key(), root_key, False)
 dac_nonce = bytes(range(32))
 dac_proof = leaf_key.sign(shared + dac_nonce, ec.ECDSA(hashes.SHA256()))
 print(json.dumps({
-    "password": password, "userRandom": b64(ur), "x": str(x),
+    "password": password, "credentials": credentials, "userRandom": b64(ur), "x": str(x),
     "register": {"cipher_suites": 1, "encryption": "aes_128_ccm", "iterations": 3000,
                  "dev_salt": b64(salt), "dev_random": b64(dr), "dev_share": b64(encode(r)),
                  "extra_crypt": {"type": "password_shadow", "params": {"passwd_id": 4}}},
     "shared": b64(shared), "userShare": b64(encode(l)),
     "userConfirm": b64(hmac.digest(confirm[:32], encode(r), "sha256")),
     "devConfirm": b64(hmac.digest(confirm[32:], encode(l), "sha256")),
-    "key": b64(key), "nonce": b64(nonce), "ccm": ccm, "pbkdf2": b64(derived),
+    "key": b64(key), "nonce": b64(nonce), "ccm": ccm, "pbkdf2": b64(raw_pbkdf2),
     "scalarPoint": b64(encode(x * g)),
     "dac": {"root": root_cert.public_bytes(serialization.Encoding.PEM).decode(),
             "leaf": b64(leaf_cert.public_bytes(serialization.Encoding.DER)),

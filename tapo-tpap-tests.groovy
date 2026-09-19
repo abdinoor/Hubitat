@@ -69,7 +69,7 @@ test("P-256 arithmetic matches independent ecdsa library") {
     rejects { driver.decodePoint([0] as byte[]) }
 }
 test("SPAKE2+ client matches independently generated server transcript") {
-    Map share = driver.makeShare(v.register, v.userRandom.decodeBase64(), v.password, new BigInteger(v.x))
+    Map share = driver.makeShare(v.register, v.userRandom.decodeBase64(), driver.credentialString(v.register), new BigInteger(v.x))
     assert share.shared == v.shared
     assert share.confirm == v.devConfirm
     assert share.params.user_share == v.userShare
@@ -99,7 +99,7 @@ test("Unsupported suites, transforms and excessive work fail closed") {
     rejects { driver.makeShare(v.register + [cipher_suites: 2], v.userRandom.decodeBase64(), v.password, BigInteger.ONE) }
     rejects { driver.pbkdf2([1] as byte[], [2] as byte[], 10001, 80) }
     rejects { driver.credentialString([extra_crypt: [type: "other"]]) }
-    assert driver.credentialString(v.register) == v.password
+    assert driver.credentialString(v.register) == v.credentials
     assert driver.hex(driver.encodeW(new BigInteger("80", 16))) == "0080"
     assert driver.hex(driver.encodeW(new BigInteger("8000", 16))) == "8000"
     rejects { driver.unb64("TQ==AAAA") }
@@ -113,6 +113,20 @@ test("Address validation rejects URLs, missing octets and out-of-range values") 
     }
     settings.deviceIp = saved
     assert driver.configuredHost() == saved
+}
+test("Password shadow modes 2 and 4 use lowercase SHA-1 without normalization") {
+    String saved = settings.tpapPassword
+    try {
+        [2, 4].each { mode ->
+            settings.tpapPassword = "password"
+            assert driver.credentialString([extra_crypt: [type: "password_shadow", params: [passwd_id: mode]]]) == "5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8"
+            settings.tpapPassword = " password "
+            assert driver.credentialString([extra_crypt: [type: "password_shadow", params: [passwd_id: mode]]]) != "5baa61e4c9b93f3f0682250b6cf8331b7ee68fd8"
+            settings.tpapPassword = v.password
+            assert driver.credentialString([extra_crypt: [type: "password_shadow", params: [passwd_id: mode]]]) == v.credentials
+        }
+        rejects { driver.credentialString([extra_crypt: [type: "password_shadow", params: [passwd_id: 99]]]) }
+    } finally { settings.tpapPassword = saved }
 }
 test("DAC root parses and missing/bogus attestation is rejected") {
     def root = driver.certificate(driver.ROOT_CA)
@@ -204,6 +218,7 @@ test("Serialized session increments sequence, publishes only authenticated read-
     byte[] packet = driver.cat([driver.u32(8), driver.ccmEncrypt(key, driver.nonceFor(nonce, 8), info)])
     driver.tpapResponse(response(null, 200, driver.b64(packet)), requests.last().token)
     assert events.switch == "on" && events.level == 62 && events.commsError == "false"
+    assert events.lastError == "none" // A nonempty value clears stale Hubitat errors persistently.
     assert state.active == null
 }
 test("Full callback handshake preserves binary secrets through JSON serialization") {

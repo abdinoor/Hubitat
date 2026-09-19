@@ -15,7 +15,10 @@ Supported negotiation is deliberately narrow:
 
 - HTTP TPAP with tls=0, PAKE userpw (advertised value 2), cipher suite 1,
   encryption aes_128_ccm.
-- password_shadow/passwd_id=4, as returned by the target S505D; no-transform
+- password_shadow/passwd_id=2 and 4 use lowercase SHA-1 of the exact UTF-8
+  account password. Verified on Sink (mode 2) and Island (mode 4), both S505D.
+  For mode 4 this supplies the local-control secret rather than the raw account
+  password; support on other models is not established. No-transform
   username/password mode is also implemented.
 - 1–10,000 PBKDF2 iterations (target returned 3,000).
 - No TLS downgrade, camera/robot authentication, other password transforms,
@@ -33,21 +36,40 @@ that preference as proof that TPAP was unavailable. The driver now attempts the
 supported TPAP registration in this specific compatibility-mode response, with
 DAC proof required. It does not downgrade a device that explicitly advertises TLS.
 
-The corrected read-only hardware test, including a run from Hubitat itself,
-reaches pake_share, where the device returns -2203 (authentication/access rejection).
-Hubitat then sets authBlocked and stops subsequent automatic login attempts.
-An independent python-kasa KLAP
-test also rejects the supplied credentials with a challenge mismatch. This
-does not establish whether the cause is stale device credentials or additional
-firmware-specific authentication requirements. No light commands were sent.
+The original mode-4 raw-password implementation reached pake_share but returned
+-2203. The account password was correct: Island requires its SHA-1-derived
+local-control secret. Static inspection of the Tapo app's local-control setup
+path identified that derivation; a single read-only hardware test confirmed it.
+The driver now derives the secret internally from the saved account password.
 
-**A complete TPAP hardware session has not been verified.** The driver now
+**A complete read-only TPAP hardware session is now verified on Kitchen Sink
+Light (192.168.5.217)** after adding password-shadow mode 2. The exact Groovy
+driver completed PAKE, verified the device's DAC certificate/proof, and decrypted
+get_device_info. The Sink's Hubitat entity remains on its working KLAP driver;
+this was a local harness test, not a driver reassignment. No light commands were sent.
+
+**Island (192.168.6.116) also completed the authenticated local harness read**,
+including DAC verification and encrypted get_device_info, reporting S505D,
+switch off, brightness 62. No power or brightness commands were sent.
+
+Both S505D switches report firmware 1.4.0 Build 260611. Their Hubitat credential
+fields were visually compared and match. After the user factory-reset Island,
+it advertises TPAP rather than KLAP and returns password-shadow mode 4.
+Both discovery owner hashes match the same account. Factory resetting alone
+did not resolve the driver's incorrect secret derivation.
+
+The driver
 compiles and saves successfully in Hubitat's Drivers Code editor. Sandbox fixes
 replace System.arraycopy with indexed copies and avoid array-typed closure
 parameters and array class expressions.
-Local Groovy 2.4.21/Java 8 and Groovy 4/Java 23 tests validate the algorithm and
-callback workflow; live binary HTTP handling and runtime performance still need
-validation on a TPAP-enabled device.
+All 26 offline tests pass under Groovy 2.4.21/Java 8 and Groovy 4/Java 23.
+Island also completed authentication and a status read **inside Hubitat** with
+commsError=false, off, and level 62. Its entity had been reassigned to KLAP;
+the TPAP driver assignment and supplied connection preferences were restored.
+An idempotent Off command (already off) completed with authenticated read-back,
+without changing the lighting. On and brightness changes have not been physically
+tested. Successful communication sets lastError to "none", since Hubitat did not
+persist an empty-string error clear across page reloads.
 
 ## Installation
 
@@ -79,9 +101,10 @@ keys and schedules a read. Poll interval defaults to 300 seconds, bounded to
   8-second HTTP timeout and a 20-second watchdog.
 - Failed/ambiguous commands are **not replayed**. Failure drops pending work and
   starts a five-minute cooldown. Authentication/access/lockout errors (-1501,
-  -2101, -2203) instead block further login attempts until credentials are
-  corrected and Save Preferences/Reset Session/Initialize is used. Do not keep
-  resetting the session with rejected credentials: device-side lockout can result.
+  -2101, -2203) instead block further login attempts until authentication
+  compatibility/settings are resolved and Save Preferences/Reset
+  Session/Initialize is used. Do not repeatedly reset the session after rejected
+  proofs: device-side lockout can result even with valid account credentials.
 - Session keys/nonces are base64 strings so they survive Hubitat state JSON
   serialization. A nonce is reserved before transmission. Sessions are discarded
   after ten minutes or sequence exhaustion; nonce counters never wrap.
