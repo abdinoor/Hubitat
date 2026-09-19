@@ -1,3 +1,4 @@
+import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
 import hubitat.helper.HexUtils
@@ -7,11 +8,13 @@ import org.codehaus.groovy.runtime.EncodingGroovyMethods
 
 metadata {
     definition(name: 'Tuya LAN Device', namespace: 'tuya', author: 'Dan Abdinoor',
-               importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy') {
+               singleThreaded: true, importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tuya-lan-driver.groovy') {
         capability "Switch"
         capability "Refresh"
         capability "Switch Level"
-        attribute "localKey", "string"
+        capability "Initialize"
+        attribute "commsError", "string"
+        attribute "lastError", "string"
         attribute "host", "string"
         attribute "port", "string"
         attribute "gwId", "string"
@@ -25,7 +28,7 @@ metadata {
                     required: true
 
             input name: 'localKey',
-                    type: 'text',
+                    type: 'password',
                     title: 'Local Key',
                     required: true
 
@@ -37,7 +40,7 @@ metadata {
             input name: 'port',
                     type: 'text',
                     title: 'Device Port',
-                    defaultValue: '6668'
+                    defaultValue: '6668',
                     required: true
 
             input name: 'pollRefresh',
@@ -70,440 +73,287 @@ metadata {
 @Field static final int SUFFIX              = 0x0000AA55
 
 
-/* -------------------------------------------------------
- * Hubitat commands
- */
+@Field static final String VERSION = "1.1.0"
+@Field static final int MAX_FRAME_BYTES = 65536
 
-def installed() {
-    def instStatus = installCommon()
-    logInfo("installed: ${instStatus}")
-    refresh()
-}
-
-/* called when device settings are saved */
-def updated() {
-    def logMsg = [:]
-
-    updateAttribute("gwId", gwId)
-    logMsg << [gwId: gwId]
-
-    updateAttribute("localKey", localKey)
-    logMsg << [localKey: localKey]
-
-    updateAttribute("host", host)
-    logMsg << [host: host]
-
-    updateAttribute("port", port)
-    logMsg << [port: port]
-
-    updateAttribute("pollRefresh", pollRefresh.toString())
-    logMsg << [pollRefresh: pollRefresh]
-    runIn(getRefreshSeconds(), poll)
-
-    LOG.desc "updated: ${logMsg}"
-
-    refresh()
-}
-
-def updateAttribute(name, value) {
-    updateDataValue(name, value)
-    sendEvent(name: name, value: value)
-}
-
-def on() {
-    setRelayState(1)
-}
-
-def off() {
-    setRelayState(0)
-}
-
-/* Switch method */
-def setRelayState(onOff) {
-    LOG.desc "setRelayState: [switch: ${onOff}]"
-    def timestamp = new Date().time.toString().substring(0, 10)
-    def gwId = getDataValue("gwId")
-    def dps = onOff ? "true" : "false"
-    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":${dps}}}/$
-    sendCmd(CONTROL, payload)
-    sendEvent(name: "switch", value: (onOff) ? "on" : "off")
-}
-
-/* Dimmer method */
-def setLevel(level, ramp = null, onTime = null ) {
-    level = getLevel(level)
-    def hundreds = level * 10  // levels are set in 100s 50pct = 500
-    LOG.desc "setLevel: [level: $level]"
-    def timestamp = new Date().time.toString().substring(0, 10)
-    def gwId = getDataValue("gwId")
-    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}","dps":{"1":true,"2":${hundreds}}}/$
-    sendCmd(CONTROL, payload)
-    sendEvent(name: "level", value: level)
-    sendEvent(name: "switch", value: "on")
-}
-
-/*  */
-def getLevel(level) {
-    if (level != null && level >= 0 && level <= 100) {
-        return level
-    }
-
-    def currValue = device.currentValue("level")
-    LOG.warn "getLevel: Invalid level=${level}. Using level=${currValue}"
-    return currValue
-}
-
-def refresh() {
-    def gwId = getDataValue("gwId")
-    LOG.debug "refresh: [gwId: ${gwId}]"
-    def timestamp = new Date().time.toString().substring(0, 10)
-    def payload = $/{"gwId":"${gwId}","devId":"${gwId}","uid":"${gwId}","t":"${timestamp}"}/$
-    sendCmd(DP_QUERY, payload)
-}
-
-def poll() {
-    runIn(getRefreshSeconds(), poll)
-    refresh()
-}
-
-def sendCmd(int command, String payload) {
-    int seqno = 1
-    if (state.seqno != null) {
-        seqno = state.seqno++
-    }
-    state.lastCommand = payload
-    sendLanCmd(seqno, command, payload)
-}
-
-/* -------------------------------------------------------
- * Communication methods
- */
-
-/* callback from hubitat */
-def parse(message) {
-    LOG.debug "parse: gwId:${getDataValue('gwId')} ${message}"
+def installed() { initialize() }
+def updated() { initialize() }
+def initialize() {
+    unschedule()
+    state.tuyaPending = null
+    state.tuyaQueue = []
+    state.tuyaRx = ""
+    state.tuyaRxAt = 0
+    state.remove("lastCommand")
+    // Never reset the counter on reconfiguration: stale responses must not match.
+    state.tuyaSerial = ((state.tuyaSerial ?: 0) as Long) + 1L
     try {
-        String hex = parseMessage(message)
-        if (hex == null) {
-            return
-        }
-        List<String> frames = splitTuyaFrames(hex)
-        if (frames == null) {
-            return
-        }
-        frames.eachWithIndex { f, i ->
-            LOG.debug "frame ${i}: ${f}"
-            String payload = decryptPayload(frames[i], getDataValue("localKey").getBytes())
-            LOG.debug "frame ${i}: ${payload}"
-            updateStatus(payload)
-        }
-    } catch (e) {
-        LOG.exception("parse", e)
+        String ip = (settings.host ?: getDataValue("host"))?.toString()?.trim()
+        checkTuya(ip != null && ip ==~ /(?:\d{1,3}\.){3}\d{1,3}/ &&
+            ip.tokenize(".").every { it.toInteger() <= 255 }, "Set a valid device IPv4 address")
+        String id = (settings.gwId ?: getDataValue("gwId"))?.toString()
+        checkTuya(id != null && id.length() > 0, "Set the device ID")
+        int portValue = (settings.port ?: getDataValue("port") ?: "6668").toString().toInteger()
+        checkTuya(portValue > 0 && portValue <= 65535, "Set a valid device port")
+        keyBytes() // Validate without copying the key into data values or events.
+        updateDataValue("host", ip)
+        updateDataValue("port", portValue.toString())
+        updateDataValue("gwId", id)
+        updateDataValue("driverVersion", VERSION)
+        updateDataValue("pollRefresh", Math.max(30, Math.min(3600, (settings.pollRefresh ?: 60) as Integer)).toString())
+        // Legacy data-only configurations remain readable until preferences are supplied.
+        if (settings.localKey) removeDataValue("localKey")
+        sendEvent(name: "host", value: ip)
+        sendEvent(name: "port", value: portValue.toString())
+        sendEvent(name: "gwId", value: id)
+        runIn(getRefreshSeconds(), "poll")
+        refresh()
+    } catch (Exception e) { failTuyaSafe(e) }
+}
+private byte[] keyBytes() {
+    String key = (settings.localKey ?: getDataValue("localKey"))?.toString()
+    checkTuya(key != null && key.getBytes("UTF-8").length == 16, "Set a 16-byte local key")
+    return key.getBytes("UTF-8") // Do not trim passwords/keys.
+}
+private void checkTuya(boolean ok, String message) {
+    if (!ok) throw new IllegalArgumentException("Tuya: " + message)
+}
+def on() { queueTuya(CONTROL, ["1": true]) }
+def off() { queueTuya(CONTROL, ["1": false]) }
+def setRelayState(onOff) { queueTuya(CONTROL, ["1": onOff ? true : false]) }
+def setLevel(level, ramp = null, onTime = null) {
+    try {
+        checkTuya(level != null, "Set a level between 0 and 100")
+        int value = Math.max(0, Math.min(100, (level as BigDecimal).intValue()))
+        // Existing DP mapping: relay=1, brightness=2, 0..100% -> 0..1000.
+        // Transition duration and onTime are not implemented.
+        if (value == 0) off()
+        else queueTuya(CONTROL, ["1": true, "2": value * 10])
+    } catch (Exception e) { failTuyaSafe(e) }
+}
+def refresh() { queueTuya(DP_QUERY, [:]) }
+def poll() {
+    refresh()
+    runIn(getRefreshSeconds(), "poll")
+}
+private void queueTuya(int command, Map dps) {
+    List queue = state.tuyaQueue ?: []
+    if (command == DP_QUERY && (state.tuyaPending || queue.any { it.command == DP_QUERY })) return
+    if (queue.size() >= 16) { LOG.warn "Tuya queue full; command rejected"; return }
+    queue << [command: command, dps: dps]
+    state.tuyaQueue = queue
+    drainTuyaQueue()
+}
+def drainTuyaQueue() {
+    if (state.tuyaPending || !state.tuyaQueue) return
+    try {
+        List queue = state.tuyaQueue
+        Map request = queue.remove(0)
+        state.tuyaQueue = queue
+        long serial = ((state.tuyaSerial ?: 0) as Long) + 1L
+        state.tuyaSerial = serial
+        state.tuyaPending = [id: serial, command: request.command, wanted: request.dps]
+        state.tuyaRx = ""
+        issueTuya(request.command as Integer, request.dps)
+    } catch (Exception e) { failTuyaSafe(e) }
+}
+private void issueTuya(int command, Map dps) {
+    long next = ((state.seqno ?: 0) as Long) + 1L
+    // Positive signed sequence IDs, reserved before I/O. Wrap only between requests.
+    if (next > Integer.MAX_VALUE || next < 1) next = 1L
+    state.seqno = next
+    Map pending = state.tuyaPending
+    pending.seq = next
+    pending.stage = command == CONTROL ? "control" : "query"
+    state.tuyaPending = pending
+    Map token = [id: pending.id, seq: next]
+    runIn(12, "tuyaTimedOut", [data: token])
+    String id = getDataValue("gwId")
+    checkTuya(id != null && id.length() > 0, "Set the device ID")
+    Map payload = [gwId: id, devId: id, uid: id, t: now().intdiv(1000).toString()]
+    if (command == CONTROL) payload.dps = dps
+    sendLanCmd(next as Integer, command, JsonOutput.toJson(payload))
+}
+def tuyaTimedOut(Map token) {
+    if (state.tuyaPending?.id == token?.id && state.tuyaPending?.seq == token?.seq) {
+        failTuya("Response timed out; pending commands discarded")
     }
 }
-
-/* Parse the payload from device message received */
+private void failTuyaSafe(Exception e) {
+    // Never log exceptions, raw packets, JSON or crypto inputs: they may contain secrets.
+    String reason = e instanceof IllegalArgumentException && e.message?.startsWith("Tuya: ") ?
+        e.message.substring(6) : e.class.simpleName + " during Tuya communication"
+    failTuya(reason)
+}
+private void failTuya(String reason) {
+    state.tuyaPending = null
+    state.tuyaQueue = []
+    state.tuyaRx = ""
+    unschedule("tuyaTimedOut")
+    sendEvent(name: "commsError", value: "true")
+    sendEvent(name: "lastError", value: reason)
+    LOG.warn reason + "; no automatic command replay"
+}
+def parse(message) {
+    try {
+        String chunk = parseMessage(message)
+        if (!chunk) return
+        List frames = splitTuyaFrames(chunk)
+        for (String frame : frames) {
+            Map decoded = extractPayload(frame.decodeHex())
+            Map pending = state.tuyaPending
+            boolean matches = pending && (decoded.seq == pending.seq ||
+                (decoded.seq == 0 && decoded.command == STATUS))
+            if (decoded.returnCode != 0) {
+                if (matches) failTuya("Device rejected command (code " + decoded.returnCode + ")")
+                continue
+            }
+            Map info = [:]
+            byte[] payload = decoded.payloadBytes
+            if (payload.length) {
+                checkTuya(payload.length % 16 == 0, "Invalid encrypted payload length")
+                info = new JsonSlurper().parseText(new String(decrypt(keyBytes(), payload), "UTF-8")) as Map
+            }
+            // Publish only validated device reports, including unsolicited status.
+            if (info.dps instanceof Map) updateStatus(info)
+            if (!matches) continue
+            if (pending.stage == "control") {
+                unschedule("tuyaTimedOut")
+                // An ACK is not proof that switch/level changed. Query the actual state.
+                issueTuya(DP_QUERY, [:])
+            } else if (info.dps instanceof Map && (info.dps["1"] instanceof Boolean || info.dps["2"] instanceof Number)) {
+                checkTuya((pending.wanted ?: [:]).every { k, v -> info.dps[k] == v },
+                    "Command acknowledged but read-back did not match")
+                unschedule("tuyaTimedOut")
+                state.tuyaPending = null
+                sendEvent(name: "commsError", value: "false")
+                sendEvent(name: "lastError", value: "none")
+                runInMillis(50, "drainTuyaQueue")
+            }
+        }
+    } catch (Exception e) { failTuyaSafe(e) }
+}
 String parseMessage(String message) {
-    LOG.debug "parseMessage: ${message}"
-    if (message == null) {
-        return null
-    }
-
-    String field = "payload:"
-    int loc = message.indexOf(field) + field.length()
-
-    String payload = message.substring(loc, message.length())
-    if (payload.length() == 0) {
-        return null
-    }
-
-    byte[] decoded = payload?.decodeBase64()
-    return new String(decoded, "ISO-8859-1")
+    if (!message) return null
+    checkTuya(message.length() <= MAX_FRAME_BYTES * 6, "Oversized LAN response")
+    if (message ==~ /(?i)[0-9a-f]+/ && message.length() % 2 == 0) return message.toLowerCase()
+    def matcher = message =~ /(?:^|[,\s])payload:\s*([^,]+)/
+    if (!matcher.find()) return null
+    String body = matcher.group(1).trim()
+    if (body ==~ /(?i)[0-9a-f]+/ && body.length() % 2 == 0) return body.toLowerCase()
+    checkTuya(body ==~ /[A-Za-z0-9+\/]*={0,2}/ && body.length() % 4 == 0, "Invalid LAN payload encoding")
+    byte[] raw = body.decodeBase64()
+    // Hubitat RAW/HEX_STRING responses contain Base64-encoded ASCII hex.
+    // Also accept raw binary Base64, but never guess a cipher payload's boundaries.
+    String ascii = new String(raw, "ISO-8859-1")
+    if (ascii ==~ /(?i)[0-9a-f]+/ && ascii.length() % 2 == 0) return ascii.toLowerCase()
+    return raw.encodeHex().toString()
 }
-
-/**
- * Extract the encrypted payload (still AES-ECB, PKCS-padded) from a raw
- * Tuya-LAN frame supplied as a byte array.
- *
- * Layout we expect in bytes
- * ┌─────────────────────────────────────────────────────────────┐
- * │  0- 3 :  prefix 0x000055AA                                  │
- * │  4- 7 :  sequence number                                    │
- * │  8-11 :  command                                            │
- * │ 12-15 :  msgLen                                             │
- * │ 16-23 :  (reserved / padding used by some firmwares)        │
- * │ 24-39 :  optional 3.x version header (“3.3”, 12 bytes → 16) │
- * │  ..   :  encrypted JSON payload                             │
- * │  -8--5:  CRC32                                              │
- * │  -4--1:  suffix 0x0000AA55                                  │
- * └─────────────────────────────────────────────────────────────┘
- *
- * @param frameBytes    complete frame *including* prefix & suffix
- * @return Map with payloadBytes and cmdCode
- */
-Map extractPayload(byte[] frameBytes) {
-    if (!frameBytes) return null
-
-    Map response = [payloadBytes: null, cmdCode: 0]
-    int idx = 0
-    int msgLen = 0
-
-    /* checking for prefix */
-    if (frameBytes.length >= 4 &&
-        (frameBytes[0] & 0xFF) == 0x00 &&
-        (frameBytes[1] & 0xFF) == 0x00 &&
-        (frameBytes[2] & 0xFF) == 0x55 &&
-        (frameBytes[3] & 0xFF) == 0xAA)
-    {
-        idx = 20  // index 20 is where version header could be
-        msgLen = ((frameBytes[12] & 0xFF) << 24) |
-                 ((frameBytes[13] & 0xFF) << 16) |
-                 ((frameBytes[14] & 0xFF) << 8)  |
-                 (frameBytes[15] & 0xFF)
-
-        response.command = ((frameBytes[4] & 0xFF) << 24) |
-                           ((frameBytes[5] & 0xFF) << 16) |
-                           ((frameBytes[6] & 0xFF) << 8)  |
-                           (frameBytes[7] & 0xFF)
-    } else {
-        int end = frameBytes.length - 8  // drop trailing CRC(4) + suffix(4) = 8 bytes
-        response['payloadBytes'] = frameBytes[0..<end]
-        return response
-    }
-
-    // 12-byte messages are unencrypted Return-codes
-    if (msgLen == 12) {
-        idx = 16 // where payload starts on these messages
-        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
-        response['payloadBytes'] = frameBytes[idx..<end]
-        return response
-    }
-
-    /* if a 3.x version header (“3.3”) follows, skip its padded 16-byte block */
-    if ((frameBytes[idx] & 0xFF) == 0x33 &&             // '3'
-        (frameBytes[idx + 1] & 0xFF) == 0x2E) {         // '.'
-        idx = 35
-    }
-
-    /* checking for suffix */
-    if ((frameBytes[frameBytes.length - 4] & 0xFF) == 0x00 &&
-        (frameBytes[frameBytes.length - 3] & 0xFF) == 0x00 &&
-        (frameBytes[frameBytes.length - 2] & 0xFF) == 0xAA &&
-        (frameBytes[frameBytes.length - 1] & 0xFF) == 0x55)
-    {
-        int end = frameBytes.length - 8  // drop CRC(4) + suffix(4) = 8 bytes
-        response['payloadBytes'] = frameBytes[idx..<end]
-        return response
-    }
-
-    response['payloadBytes'] = frameBytes[idx..<frameBytes.length]
-    return response
-}
-
-String decryptPayload(String received, byte[] localKey) {
-    byte[] decoded = EncodingGroovyMethods.decodeHex(received)
-    Map response = extractPayload(decoded)
-    byte[] payload = response['payloadBytes']
-
-    LOG.debug "decryptPayload: [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-
-    // 4-byte messages are a Return-code and are not encrypted
-    if (payload.length == 4) {
-        return handleReturnCode(response)
-    }
-
-    if (payload.length % 16 != 0) {
-        LOG.error "decryptPayload: payload length must be divisible by 16 [payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-        return null
-    }
-
-    byte[] decryptedBytes = decrypt(localKey, payload)
-    if (decryptedBytes == null) {
-        LOG.error "unpackMessage: decryptedBytes is null [payload: ${payload}]"
-        return null
-    }
-    String decrypted = new String(decryptedBytes, "ISO-8859-1")
-    LOG.debug "decryptPayload: [decrypted: ${decrypted}, payload: ${payload.encodeHex().toString()}, bytes: ${payload.length}, key: ${new String(localKey)}]"
-    return decrypted
-}
-
-/**
- * Split a concatenated Tuya-LAN hex stream into individual frame-hex strings.
- *
- * Behaviours handled
- * ───────────────────
- * 1. **Normal framing** – frames that start with “000055AA … 0000AA55 ”.
- * 2. **Orphan suffix**  – when “0000AA55” noise appears *before* the next prefix,
- *    it is skipped.
- * 3. **Initial partial frame** – if the stream *begins* with data that
- *    **doesn’t** have a prefix (a tail of an earlier transmission),
- *    that slice is kept as frame 0 and returned unchanged.
- *
- * @param hex full stream (upper/lower case accepted)
- * @return    List<String> with every discovered frame, in order of appearance
- */
-List<String> splitTuyaFrames(String hex) {
-    hex = hex.toLowerCase()
-    final String PREFIX = "000055aa"
-    final String SUFFIX = "0000aa55"
-
+List<String> splitTuyaFrames(String chunk) {
+    checkTuya(chunk != null && chunk.length() % 2 == 0 && chunk ==~ /(?i)[0-9a-f]*/, "Invalid hex response")
+    String old = now() - ((state.tuyaRxAt ?: 0) as Long) <= 15000L ? (state.tuyaRx ?: "") : ""
+    String buffer = old + chunk.toLowerCase()
+    checkTuya(buffer.length() <= MAX_FRAME_BYTES * 4, "Receive buffer limit exceeded")
+    state.tuyaRxAt = now()
     List<String> frames = []
-
-    /* ── handle possible leading partial frame ─────────────────────────────── */
-    int firstPrefix = hex.indexOf(PREFIX)
-    if (firstPrefix == -1) {                          // no prefixes at all
-        if (hex) frames << hex                        // whole stream = single frame
-        return frames
-    }
-    if (firstPrefix > 0) {                            // data *before* first prefix
-        String partial = hex.substring(0, firstPrefix)
-        frames << partial
-    }
-
-    /* ── iterative extraction of proper frames ────────────────────────────── */
-    int cursor = firstPrefix
-    int idx    = (frames.isEmpty() ? 0 : 1)
-
-    while (cursor < hex.length()) {
-
-        /* skip any orphan suffix(es) appearing before the next real prefix */
-        int orphanSuffix = hex.indexOf(SUFFIX, cursor)
-        int nextPrefix   = hex.indexOf(PREFIX, cursor)
-
-        if (orphanSuffix != -1 && orphanSuffix < nextPrefix) {
-            cursor = orphanSuffix + SUFFIX.length()
-            continue
+    while (buffer) {
+        int prefix = buffer.indexOf("000055aa")
+        if (prefix < 0) {
+            // Retain only a possible split prefix, not arbitrary orphan ciphertext.
+            int keep = 0
+            for (int n = 2; n <= 6 && n <= buffer.length(); n += 2) {
+                if (buffer.endsWith("000055aa".substring(0, n))) keep = n
+            }
+            buffer = keep ? buffer.substring(buffer.length() - keep) : ""
+            break
         }
-
-        /* locate the prefix we will parse now */
-        int start = nextPrefix
-        if (start == -1) break                        // nothing further
-
-        /* need at least the fixed 16-byte header to read msgLen */
-        if (start + 32 > hex.length()) break
-
-        int msgLen = Integer.parseUnsignedInt(
-                hex.substring(start + 24, start + 32), 16)
-
-        int frameHexLen = (16 + msgLen) * 2           // bytes → hex chars
-        if (start + frameHexLen > hex.length()) {
-            String truncated = hex.substring(start, hex.length())
-            frames << truncated
-            break                                     // incomplete trailing frame
-        }
-
-        String frameHex = hex.substring(start, start + frameHexLen)
-        frames << frameHex
-        idx++
-        cursor = start + frameHexLen                  // jump past extracted frame
+        buffer = buffer.substring(prefix)
+        if (buffer.length() < 32) break
+        long length = Long.parseLong(buffer.substring(24, 32), 16)
+        checkTuya(length >= 12 && length <= MAX_FRAME_BYTES - 16, "Invalid frame length")
+        int fullLength = ((16 + length) * 2) as Integer
+        if (buffer.length() < fullLength) break
+        String frame = buffer.substring(0, fullLength)
+        // Validate framing and CRC before yielding anything to decryption.
+        extractPayload(frame.decodeHex())
+        frames << frame
+        buffer = buffer.substring(fullLength)
     }
-
+    state.tuyaRx = buffer
     return frames
 }
-
-/**
- * Evaluate a 4-byte Tuya return-code.
- * rcBytes[3] is the actual code; the first three bytes are always 0.
- */
-String handleReturnCode(Map response) {
-    if (!response) return
-
-    if (!response['payloadBytes'] instanceof Byte) {
-        LOG.error "return-code must be a single byte"
-        return null
-    }
-
-    int code = response['payloadBytes'][3] & 0xFF  // 0 = success, non-zero = failure
-
-    if (code == 0) {
-        LOG.info "Tuya command ${response.command} acknowledged (0x00)"
-    } else {
-        LOG.warn "Tuya command ${response.command} rejected (0x${String.format('%02X', code)})"
-    }
-
-    return """{"returnCode":${code}}"""
+private byte[] byteSlice(byte[] value, int start, int end) {
+    checkTuya(start >= 0 && end >= start && end <= value.length, "Invalid byte slice")
+    byte[] out = new byte[end - start]
+    for (int i = 0; i < out.length; i++) out[i] = value[start + i]
+    return out
 }
-
-/* extract datapoints from json payload and update device status */
-def updateStatus(payload) {
-    if (payload == null) {
-        LOG.warn "updateStatus: payload must not be null"
-        return
+private long readUnsignedInt(byte[] value, int pos) {
+    return ((value[pos] & 255L) << 24) | ((value[pos + 1] & 255L) << 16) |
+        ((value[pos + 2] & 255L) << 8) | (value[pos + 3] & 255L)
+}
+Map extractPayload(byte[] frame) {
+    checkTuya(frame != null && frame.length >= 28 && frame.length <= MAX_FRAME_BYTES, "Invalid frame size")
+    checkTuya(readUnsignedInt(frame, 0) == PREFIX_55AA_VALUE, "Invalid frame prefix")
+    checkTuya(readUnsignedInt(frame, 12) == frame.length - 16, "Frame length mismatch")
+    checkTuya(readUnsignedInt(frame, frame.length - 4) == SUFFIX, "Invalid frame suffix")
+    long expected = calculateCRC32(byteSlice(frame, 0, frame.length - 8)) & 0xffffffffL
+    checkTuya(readUnsignedInt(frame, frame.length - 8) == expected, "CRC mismatch")
+    int start = 20
+    int end = frame.length - 8
+    // Responses contain a four-byte return code, then an optional 15-byte 3.3 header.
+    if (end - start >= 3 && frame[start] == 0x33 && frame[start + 1] == 0x2e && frame[start + 2] == 0x33) {
+        checkTuya(end - start >= 15, "Truncated version header")
+        start += 15
     }
-
-
-    def logMsg = [:]
-    def response = new JsonSlurper().parseText(payload)
-    if (!response.containsKey('dps')) {
-        // no datapoints to update, probably a return-code message
-        return
-    }
-
-    // handle the incoming data points (DPs)
-    if (response.dps['1'] != null) {
-        def onOff = (response.dps['1']) ? "on" : "off"
-        if (onOff != device.currentValue("switch")) {
-            sendEvent(name: "switch", value: onOff)
-            logMsg << ["switch": onOff]
-        }
-    }
-    if (response.dps['2'] != null) {
-        def level = (int) (response.dps['2'] / 10)
-        if (level != device.currentValue("level")) {
-            sendEvent(name: "level", value: level)
-            logMsg << [level: level]
-        }
-    }
-
-    if (logMsg.size() > 0) {
-        LOG.desc "status changed: ${logMsg}"
+    return [seq: readUnsignedInt(frame, 4), command: readUnsignedInt(frame, 8),
+        returnCode: readUnsignedInt(frame, 16), payloadBytes: byteSlice(frame, start, end)]
+}
+String decryptPayload(String hex, byte[] key) {
+    Map frame = extractPayload(hex.decodeHex())
+    checkTuya(frame.returnCode == 0, "Device rejected command")
+    byte[] payload = frame.payloadBytes
+    if (!payload.length) return JsonOutput.toJson([returnCode: frame.returnCode])
+    checkTuya(payload.length % 16 == 0, "Invalid encrypted payload length")
+    return new String(decrypt(key, payload), "UTF-8")
+}
+def updateStatus(Map response) {
+    Map dps = response.dps
+    if (!(dps instanceof Map)) return
+    if (dps["1"] instanceof Boolean) sendEvent(name: "switch", value: dps["1"] ? "on" : "off")
+    if (dps["2"] instanceof Number) {
+        checkTuya(dps["2"] >= 0 && dps["2"] <= 1000, "Invalid brightness report")
+        sendEvent(name: "level", value: (dps["2"] / 10).intValue())
     }
 }
-
-def sendLanCmd(int seqno, int command, String payload) {
-    LOG.debug "sendLanCmd: [IP: ${getAddress()}, payload: ${payload}]"
-
-    byte[] message = encodeMessage(seqno, command, payload, getDataValue("localKey").getBytes())
-
-    def myHubAction = new hubitat.device.HubAction(
-        HexUtils.byteArrayToHexString(message),
-        hubitat.device.Protocol.LAN,
-        [
-            destinationAddress: getAddress(),
-            type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
-            encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
-            timeout: 300,
-            parseWarning: true,
-            ignoreResponse: false
-        ])
-    try {
-        sendHubCommand(myHubAction)
-    } catch (e) {
-        LOG.warn "sendLanCmd: LAN Error = ${e}.\n\rNo retry on this error."
-    }
+def sendLanCmd(int seq, int command, String payload) {
+    byte[] message = encodeMessage(seq, command, payload, keyBytes())
+    def action = new hubitat.device.HubAction(HexUtils.byteArrayToHexString(message),
+        hubitat.device.Protocol.LAN, [destinationAddress: getAddress(),
+        type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
+        encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
+        timeout: 10, parseWarning: true, ignoreResponse: false])
+    // Let the caller report failure; never pretend a failed send succeeded.
+    sendHubCommand(action)
+    LOG.debug "Tuya request sent (command " + command + ", sequence " + seq + ")"
 }
-
-/* combine host IP address and port */
 def getAddress() {
-    def ip = getDataValue("host")
-    if (ip == null) LOG.warn "No IP address set for ${device}"
-    def port = getDataValue("port")
-    return "${ip}:${port}"
+    String host = getDataValue("host")
+    checkTuya(host != null && host ==~ /(?:\d{1,3}\.){3}\d{1,3}/ &&
+        host.tokenize(".").every { it.toInteger() <= 255 }, "Set a valid device IPv4 address")
+    int port = (getDataValue("port") ?: "6668").toInteger()
+    checkTuya(port > 0 && port <= 65535, "Set a valid device port")
+    return host + ":" + port
 }
-
-/* get refresh rate or a default */
 def getRefreshSeconds() {
-    def seconds = getDataValue("pollRefresh")
-    if (seconds == null) return 300
-    return Integer.parseInt(getDataValue("pollRefresh"))
+    return Math.max(30, Math.min(3600, (getDataValue("pollRefresh") ?: "60").toInteger()))
 }
-
 
 /* -------------------------------------------------------
  * Encoding methods
  */
 byte[] encodeMessage(int seqno, int cmd, String payload, byte[] localKey) {
-    byte[] encrypted = encrypt(getDataValue("localKey").getBytes(), payload)
+    byte[] encrypted = encrypt(localKey, payload)
 
     if (cmd == DP_QUERY) {
         return packMessage(seqno, cmd, encrypted, localKey)
@@ -672,7 +522,7 @@ byte[] encrypt(byte[] key, String plaintext) {
     Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding")
     cipher.init(Cipher.ENCRYPT_MODE, secretKey)
 
-    byte[] plainBytes = plaintext.getBytes()
+    byte[] plainBytes = plaintext.getBytes("UTF-8")
 
     // Perform encryption
     cipher.doFinal(plainBytes)
@@ -680,10 +530,7 @@ byte[] encrypt(byte[] key, String plaintext) {
 
 /* decrypt the payload part of the response */
 byte[] decrypt(byte[] key, byte[] encrypted) {
-    if (encrypted.length % 16 != 0) {
-        LOG.error "encrypted length must be divisible by 16 [length=${encrypted.length}]"
-        return null
-    }
+    checkTuya(encrypted.length > 0 && encrypted.length % 16 == 0, "Invalid encrypted payload length")
 
     SecretKeySpec secretKey = new SecretKeySpec(key, "AES")
 
@@ -695,36 +542,7 @@ byte[] decrypt(byte[] key, byte[] encrypted) {
     cipher.doFinal(encrypted)
 }
 
-String decodeHost(String host) {
-    // Split the hex string into 4 octets (2 characters each)
-    StringBuilder sb = new StringBuilder(15)
-    sb.append(Integer.parseInt(host.substring(0, 2), 16))
-    sb.append(".")
-    sb.append(Integer.parseInt(host.substring(2, 4), 16))
-    sb.append(".")
-    sb.append(Integer.parseInt(host.substring(4, 6), 16))
-    sb.append(".")
-    sb.append(Integer.parseInt(host.substring(6, 8), 16))
-    sb.toString()
-}
-
-String decodePort(String port) {
-    Integer.parseInt(port.substring(0, 4), 16).toString()
-}
-
 @Field private final Map LOG = [
-        debug    : { s -> if (settings.logEnable) { log.debug("${device.displayName}: ${s}") } },
-        desc    : { s -> if (settings.txtEnable) { log.info("${device.displayName}: ${s}") } },
-        info     : { s -> log.info("${device.displayName}: ${s}") },
-        warn     : { s -> log.warn("${device.displayName}: ${s}") },
-        error    : { s -> log.error("${device.displayName}: ${s}") },
-        exception: { message, exception ->
-            List<StackTraceElement> relevantEntries = exception.stackTrace.findAll { entry -> entry.className.startsWith('user_app') }
-            Integer line = relevantEntries[0]?.lineNumber
-            String method = relevantEntries[0]?.methodName
-            log.error "<pre>${exception}<br><br>${message}: ${exception} at line ${line} (${method})<br><br>Stack trace:<br>${getStackTrace(exception) }"
-            if (settings.logEnable) {
-                log.debug("App exception stack trace:\n${relevantEntries.join('\n')}")
-            }
-        }
+    debug: { s -> if (settings.logEnable) log.debug(s) },
+    warn: { s -> log.warn(s) }
 ].asImmutable()
