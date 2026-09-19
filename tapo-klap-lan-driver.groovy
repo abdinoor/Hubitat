@@ -1,10 +1,8 @@
 import groovy.json.JsonOutput
 import groovy.json.JsonSlurper
 import groovy.transform.Field
-import java.security.KeyFactory
 import java.security.MessageDigest
-import java.security.spec.PKCS8EncodedKeySpec
-import java.util.Random
+import java.security.SecureRandom
 import javax.crypto.Cipher
 import javax.crypto.spec.IvParameterSpec
 import javax.crypto.spec.SecretKeySpec
@@ -13,11 +11,15 @@ metadata {
 	definition (name: "Tapo KLAP LAN Device",
 				namespace: "tapo",
 				author: "Dan Abdinoor",
+                singleThreaded: true,
 				importUrl: 'https://raw.githubusercontent.com/abdinoor/Hubitat/refs/heads/master/tapo-klap-lan-driver.groovy'
 			   ) {
         capability "Switch"
         capability "SwitchLevel"
         capability "Refresh"
+        capability "Initialize"
+        command "resetSession"
+        attribute "lastError", "string"
 		attribute "connection", "string"
 		attribute "commsError", "string"
 		attribute "deviceIP", "string"
@@ -51,64 +53,45 @@ metadata {
 	}
 }
 
-@Field static final String VERSION = "1.0.0"
+@Field static final String VERSION = "1.1.0"
 
-def installed() {
-	pauseExecution(3000)
-	def instStatus = [:]
-	sendEvent(name: "connection", value: "LAN")
-	sendEvent(name: "commsError", value: "false")
-	state.errorCount = 0
-	runIn(1, updated)
-	LOG.info "installed: ${instStatus}"
-}
+def installed() { updated() }
+def initialize() { updated() }
+def resetSession() { updated() }
 
 def updated() {
-	unschedule()
-	state.remove("deviceStatus")
-	state.remove("klapSession")
-	removeDataValue("driverVersion")
-	refresh()
-
-	def updStatus = [:]
-	updStatus << [txtEnable: txtEnable, logEnable: logEnable]
-
-	if (manualIp != getDataValue("deviceIP")) {
-		updateDataValue("deviceIP", manualIp)
-		sendEvent(name: "deviceIP", value: manualIp)
-		updStatus << [ipUpdate: manualIp]
-	}
-
-	state.model = getDataValue("model")
-
-	state.errorCount = 0
-	sendEvent(name: "commsError", value: "false")
-
-    updateDataValue("pollRefresh", pollRefresh.toString())
-    updStatus << [pollRefresh: pollRefresh]
-
-    runIn(getRefreshSeconds(), poll)
-	runIn(5, listAttributes)
-
-	LOG.info "updated: ${updStatus}"
+    unschedule()
+    state.klapActive = null
+    state.klapQueue = []
+    state.klapSession = null
+    state.klapHandshake = null
+    state.klapSerial = ((state.klapSerial ?: 0) as Long) + 1L
+    state.klapRetryAfter = 0
+    state.klapAuthBlocked = false
+    state.remove("deviceStatus")
+    state.errorCount = 0
+    updateDataValue("driverVersion", VERSION)
+    sendEvent(name: "connection", value: "LAN")
+    try {
+        // Persist the corrected address BEFORE any request is queued.
+        String host = validateKlapHost(settings.manualIp ?: getDataValue("deviceIP"))
+        updateDataValue("deviceIP", host)
+        sendEvent(name: "deviceIP", value: host)
+        updateDataValue("pollRefresh", Math.max(30, Math.min(3600, (settings.pollRefresh ?: 300) as Integer)).toString())
+        refresh()
+        runIn(getRefreshSeconds(), "poll")
+    } catch (Exception e) { klapFailSafe(e) }
 }
-
-def refresh() {
-	// Fetch device info using KLAP
-	Map result = sendKlapRequest("get_device_info", [:])
-	if (result && result.error_code == 0) {
-		def status = result.result ?: [:]
-		updateSwitchState(status)
-		setCommsError(false)
-	} else {
-		LOG.warn "refresh: Failed to fetch device info${result?.error_code ? " (error_code=${result.error_code})" : ""}"
-		setCommsError(true)
-	}
-}
-
+def refresh() { sendKlapRequest("get_device_info", [:]) }
 def poll() {
-	refresh()
-	runIn(getRefreshSeconds(), poll)
+    refresh()
+    runIn(getRefreshSeconds(), "poll")
+}
+private String validateKlapHost(Object value) {
+    String host = value?.toString()?.trim()
+    klapCheck(host != null && host ==~ /(?:\d{1,3}\.){3}\d{1,3}/ &&
+        host.tokenize(".").every { it.toInteger() <= 255 }, "Set a valid device IPv4 address")
+    return host
 }
 
 /**
@@ -129,7 +112,7 @@ def getRefreshSeconds() {
 	/* get refresh rate or a default */
     def seconds = getDataValue("pollRefresh")
     if (seconds == null) return 300
-    return Integer.parseInt(getDataValue("pollRefresh"))
+    return Math.max(30, Math.min(3600, Integer.parseInt(seconds)))
 }
 
 def getDeviceAddr() {
@@ -137,7 +120,7 @@ def getDeviceAddr() {
 }
 
 def updateSwitchState(status) {
-	LOG.debug "updateSwitchState status: ${status}"
+	LOG.debug "Updating switch/level from device read-back"
 	if (status.device_on != null) {
 		String switchVal = status.device_on ? "on" : "off"
 		if (switchVal != device.currentValue("switch")) {
@@ -164,45 +147,13 @@ def setCommsError(status) {
 
 // Switch capability commands ------------------------------------------------
 
-def on() {
-	sendDevicePowerCommand(true)
-}
-
-def off() {
-	sendDevicePowerCommand(false)
-}
-
-private void sendDevicePowerCommand(boolean turnOn) {
-	Map response = sendKlapRequest("set_device_info", [device_on: turnOn])
-	if (response && response.error_code == 0) {
-		String switchVal = turnOn ? "on" : "off"
-		sendEvent(name: "switch", value: switchVal, descriptionText: "${device.displayName} switch is ${switchVal}")
-		setCommsError(false)
-		runIn(1, "refresh")
-	} else {
-		LOG.warn "sendDevicePowerCommand: command failed${response?.error_code ? " (error_code=${response.error_code})" : ""}"
-		setCommsError(true)
-	}
-}
-
+def on() { sendKlapRequest("set_device_info", [device_on: true]) }
+def off() { sendKlapRequest("set_device_info", [device_on: false]) }
 def setLevel(level, duration = null) {
-	Integer levelInt = level as Integer
-	if (levelInt < 0) levelInt = 0
-	if (levelInt > 100) levelInt = 100
-	Map params = [
-		device_on: (levelInt > 0),
-		brightness: levelInt
-	]
-	Map response = sendKlapRequest("set_device_info", params)
-	if (response && response.error_code == 0) {
-		sendEvent(name: "switch", value: levelInt > 0 ? "on" : "off", descriptionText: "${device.displayName} switch is ${levelInt > 0 ? 'on' : 'off'}")
-		sendEvent(name: "level", value: levelInt, descriptionText: "${device.displayName} level is ${levelInt}")
-		setCommsError(false)
-		runIn(1, "refresh")
-	} else {
-		LOG.warn "setLevel: command failed${response?.error_code ? " (error_code=${response.error_code})" : ""}"
-		setCommsError(true)
-	}
+    int value = Math.max(0, Math.min(100, (level as BigDecimal).intValue()))
+    // Transition duration is not implemented. Zero means off, not brightness 0.
+    if (value == 0) off()
+    else sendKlapRequest("set_device_info", [device_on: true, brightness: value])
 }
 
 // ============================================================================
@@ -211,7 +162,7 @@ def setLevel(level, duration = null) {
 
 private Map getKlapCredentials() {
 	String username = settings?.klapUsername?.trim()
-	String password = settings?.klapPassword?.trim()
+	String password = settings?.klapPassword?.toString()
 	if (!username || !password) {
 		LOG.warn "KLAP credentials not configured"
 		return null
@@ -231,7 +182,7 @@ private String getTerminalUuid() {
 
 private String generateTerminalUuid() {
 	def hexChars = "0123456789abcdef"
-	def rng = new Random()
+	def rng = new SecureRandom()
 	List<Integer> segments = [8, 4, 4, 4, 12]
 	List<String> parts = []
 	segments.each { len ->
@@ -360,7 +311,7 @@ private String extractKlapCookie(def headers) {
 			}
 		}
 	} catch (Exception e) {
-		LOG.warn "extractKlapCookie: error accessing headers: ${e.message}"
+		LOG.warn "extractKlapCookie: could not read response headers"
 		return null
 	}
 	
@@ -454,7 +405,7 @@ private void klapDeriveSessionKeys(byte[] localSeed, byte[] remoteSeed, byte[] a
 	// Last 4 bytes = initial sequence number (signed big-endian)
 	byte[] seqBytes = new byte[4]
 	for (int i = 0; i < 4; i++) {
-		seqBytes[i] = fullIv[i + 12]
+		seqBytes[i] = fullIv[i + 28]
 	}
 	int seq = ((seqBytes[0] & 0xFF) << 24) | 
 	          ((seqBytes[1] & 0xFF) << 16) | 
@@ -476,231 +427,27 @@ private void klapDeriveSessionKeys(byte[] localSeed, byte[] remoteSeed, byte[] a
 		signature[i] = sigHash[i]
 	}
 	
-	session.aesKey = aesKey
-	session.aesIvBase = aesIvBase
-	session.signature = signature
+	session.aesKey = aesKey.encodeBase64().toString()
+	session.aesIvBase = aesIvBase.encodeBase64().toString()
+	session.signature = signature.encodeBase64().toString()
 	session.seq = seq
-}
-
-private boolean klapHandshake() {
-	LOG.debug "klapHandshake: starting KLAP handshake"
-	Map creds = getKlapCredentials()
-	if (!creds) {
-		LOG.warn "klapHandshake: credentials not available"
-		return false
-	}
-	
-	String host = getDeviceAddr()
-	String baseUrl = "http://${host}/app"
-	
-	// Generate local seed (16 random bytes)
-	Random random = new Random()
-	byte[] localSeed = new byte[16]
-	random.nextBytes(localSeed)
-	
-	// Stage 1: Send local seed as RAW BYTES via asynchttpPost (Hubitat-safe)
-	try {
-		String handshake1Url = "${baseUrl}/handshake1"
-		def syncResult = [waiting: true, completed: false]
-		
-		Map params = [
-			uri: handshake1Url,
-			requestContentType: 'application/octet-stream',
-			contentType: 'application/octet-stream',
-			timeout: 5,
-			body: localSeed
-		]
-		
-		asynchttpPost('klapHandshake1Callback', params, [result: syncResult])
-		
-		int waitCount = 0
-		while (syncResult.waiting && waitCount < 50) {
-			pauseExecution(100)
-			waitCount++
-		}
-		
-		if (syncResult.waiting) {
-			LOG.warn "klapHandshake: Stage 1 timeout waiting for response"
-			return false
-		}
-		
-		if (!syncResult.completed) {
-			LOG.warn "klapHandshake: Stage 1 request failed"
-			return false
-		}
-		
-		if (syncResult.status != 200) {
-			LOG.warn "klapHandshake: Stage 1 HTTP error: ${syncResult.status}"
-			return false
-		}
-		
-		byte[] responseBytes = decodeIfBase64(syncResult.data)
-		if (!responseBytes) {
-			LOG.warn "klapHandshake: Stage 1 response data is null"
-			return false
-		}
-		
-		LOG.debug "klapHandshake: Stage 1 response length: ${responseBytes.length} bytes"
-		
-		if (responseBytes.length < 48) {
-			LOG.warn "klapHandshake: Stage 1 invalid response length: ${responseBytes.length} (expected at least 48)"
-			return false
-		}
-		
-		LOG.debug "klapHandshake: Stage 1 response length: ${responseBytes.length} bytes (using first 48)"
-		
-		// Extract remote seed and server hash (first 16 bytes = remote_seed, next 32 bytes = server_hash)
-		byte[] remoteSeed = new byte[16]
-		byte[] serverHash = new byte[32]
-		for (int i = 0; i < 16; i++) {
-			remoteSeed[i] = responseBytes[i]
-		}
-		for (int i = 0; i < 32; i++) {
-			serverHash[i] = responseBytes[i + 16]
-		}
-		
-		// Debug: log the extracted values (matching tapo-lan-driver.groovy)
-		String remoteSeedHex = remoteSeed.encodeHex().toString()
-		String serverHashHex = serverHash.encodeHex().toString()
-		LOG.debug "klapHandshake: Extracted remoteSeed (hex): ${remoteSeedHex}"
-		LOG.debug "klapHandshake: Extracted serverHash (hex): ${serverHashHex}"
-		
-		// Extract cookie (TP_SESSIONID)
-		String cookie = extractKlapCookie(syncResult.headers)
-		if (!cookie) {
-			LOG.warn "klapHandshake: Warning: No cookie found"
-		} else {
-			// Ensure cookie is just the value, not "Cookie: value" - match test implementation
-			if (cookie.startsWith("Cookie:")) {
-				cookie = cookie.substring(7).trim()
-			}
-			// Trim any whitespace
-			cookie = cookie.trim()
-			LOG.debug "klapHandshake: Cookie extracted (length=${cookie.length()}): ${cookie.length() > 30 ? cookie.substring(0, 30) + '...' : cookie}"
-		}
-		
-		// Try to find matching auth_hash
-		def authResult = klapFindMatchingAuthHash(localSeed, remoteSeed, serverHash, creds.username, creds.password)
-		
-		byte[] authHash
-		boolean useV2
-		if (authResult) {
-			authHash = authResult[0]
-			useV2 = authResult[1]
-			String hashHex = authHash.encodeHex().toString()
-			LOG.debug "klapHandshake: Using auth hash (${useV2 ? 'V2' : 'V1'}): ${hashHex.length() > 16 ? hashHex.substring(0, 16) + '...' : hashHex}"
-		} else {
-			// If no match found, try with user credentials V2 first, then V1 as fallback
-			LOG.warn "klapHandshake: No exact hash match, trying with user credentials V2 first..."
-			byte[] authHashV2 = klapComputeAuthHash(creds.username, creds.password, true)
-			byte[] expectedHashV2 = klapHandshake1Hash(localSeed, remoteSeed, authHashV2, true)
-			boolean v2Matches = (serverHash.length == expectedHashV2.length)
-			if (v2Matches) {
-				for (int i = 0; i < serverHash.length; i++) {
-					if (serverHash[i] != expectedHashV2[i]) {
-						v2Matches = false
-						break
-					}
-				}
-			}
-			
-			if (v2Matches) {
-				LOG.debug "klapHandshake: V2 hash matches, using V2"
-				authHash = authHashV2
-				useV2 = true
-			} else {
-				LOG.warn "klapHandshake: V2 doesn't match, trying V1..."
-				authHash = klapComputeAuthHash(creds.username, creds.password, false)
-				useV2 = false
-			}
-		}
-		
-		// Stage 2: Send hash as RAW BYTES - match test implementation
-		LOG.debug "klapHandshake: Stage 2: Sending hash as raw bytes..."
-		return klapHandshake2(localSeed, remoteSeed, authHash, useV2, cookie, baseUrl)
-		
-	} catch (Exception e) {
-		LOG.warn "klapHandshake: Handshake exception: ${e.message}"
-		return false
-	}
-}
-
-private boolean klapHandshake2(byte[] localSeed, byte[] remoteSeed, byte[] authHash, boolean useV2, String cookie, String baseUrl) {
-	try {
-		// Compute hash based on protocol version
-		byte[] clientHash = klapHandshake2Hash(localSeed, remoteSeed, authHash, useV2)
-		String clientHashHex = clientHash.encodeHex().toString()
-		LOG.debug "klapHandshake2: Client hash computed (${useV2 ? 'V2' : 'V1'}), length=${clientHash.length}, hash=${clientHashHex}"
-		
-		// Use asynchttpPost for Stage 2 as well
-		String handshake2Url = "${baseUrl}/handshake2"
-		def syncResult2 = [waiting: true, completed: false]
-		
-		Map headers2 = [:]
-		if (cookie) {
-			String trimmedCookie = cookie.trim()
-			headers2.Cookie = trimmedCookie
-			LOG.debug "klapHandshake2: Sending cookie (length=${trimmedCookie.length()}): ${trimmedCookie.length() > 30 ? trimmedCookie.substring(0, 30) + '...' : trimmedCookie}"
-			LOG.debug "klapHandshake2: Client hash length: ${clientHash.length} bytes"
-		} else {
-			LOG.warn "klapHandshake2: No cookie available for Stage 2"
-		}
-		
-		Map params2 = [
-			uri: handshake2Url,
-			requestContentType: 'application/octet-stream',
-			contentType: 'application/octet-stream',
-			timeout: 5,
-			body: clientHash
-		]
-		params2.headers = headers2
-		
-		asynchttpPost('klapHandshake2Callback', params2, [result: syncResult2])
-		
-		int waitCount2 = 0
-		while (syncResult2.waiting && waitCount2 < 50) {
-			pauseExecution(100)
-			waitCount2++
-		}
-		
-		if (syncResult2.waiting) {
-			LOG.warn "klapHandshake2: Stage 2 timeout waiting for response"
-			return false
-		}
-		
-		if (syncResult2.status != 200) {
-			LOG.warn "klapHandshake2: Stage 2 HTTP error: ${syncResult2.status}"
-			return false
-		}
-		
-		// Derive final AES key and IV from seeds
-		klapDeriveSessionKeys(localSeed, remoteSeed, authHash)
-		Map session = getKlapSession()
-		session.cookie = cookie
-		session.terminalUuid = getTerminalUuid()
-		session.useV2 = useV2
-		
-		LOG.debug "klapHandshake2: Handshake successful!"
-		return true
-		
-	} catch (Exception e) {
-		LOG.warn "klapHandshake2: Stage 2 exception: ${e.message}"
-		return false
-	}
+    session.format = 2
+    state.klapSession = session
 }
 
 private List klapEncrypt(byte[] plaintext) {
 	Map session = getKlapSession()
-	byte[] aesKey = session.aesKey
-	byte[] aesIvBase = session.aesIvBase
-	byte[] signature = session.signature
+	byte[] aesKey = session.aesKey.decodeBase64()
+	byte[] aesIvBase = session.aesIvBase.decodeBase64()
+	byte[] signature = session.signature.decodeBase64()
 	int seq = session.seq ?: 0
 	
 	if (!aesKey || !aesIvBase || !signature) {
 		throw new IllegalStateException("AES key/IV not available")
 	}
 	
-	// Increment sequence number
+	// Never wrap a sequence in an existing session.
+    klapCheck(seq < Integer.MAX_VALUE, "Session sequence exhausted")
 	seq++
 	
 	// Build IV: iv_base + seq (as signed 32-bit big-endian)
@@ -746,13 +493,14 @@ private List klapEncrypt(byte[] plaintext) {
 	}
 	
 	session.seq = seq
+    state.klapSession = session // Reserve before issuing HTTP, including ambiguous failures.
 	return [result, seq]
 }
 
 private byte[] klapDecrypt(byte[] ciphertext, Integer seqNum) {
 	Map session = getKlapSession()
-	byte[] aesKey = session.aesKey
-	byte[] aesIvBase = session.aesIvBase
+	byte[] aesKey = session.aesKey.decodeBase64()
+	byte[] aesIvBase = session.aesIvBase.decodeBase64()
 	int seq = seqNum != null ? seqNum : (session.seq ?: 0)
 	
 	if (!aesKey || !aesIvBase) {
@@ -796,254 +544,165 @@ private byte[] klapDecrypt(byte[] ciphertext, Integer seqNum) {
 		return decrypted
 		
 	} catch (Exception e) {
-		LOG.warn "klapDecrypt: Decryption error: ${e.message}"
+		LOG.warn "klapDecrypt: invalid encrypted response"
 		return null
 	}
 }
 
-// Async HTTP callbacks no longer required (synchronous HTTP now used)
-
-private boolean ensureKlapSession() {
-	Map session = getKlapSession()
-	if (session.aesKey && session.cookie && session.seq != null) {
-		LOG.debug "ensureKlapSession: existing KLAP session still valid"
-		return true
-	}
-	
-	LOG.debug "ensureKlapSession: establishing new KLAP session"
-	if (klapHandshake()) {
-		setCommsError(false)
-		return true
-	} else {
-		setCommsError(true)
-		return false
-	}
+// Callback-driven, single-flight transport. Only JSON-safe values live in state.
+private void klapCheck(boolean ok, String message) {
+    if (!ok) throw new IllegalArgumentException("KLAP: " + message)
 }
-
-private Map sendKlapRequest(String method, Map params) {
-	// Allow one retry for session errors (e.g., HTTP 403)
-	for (int i = 0; i < 3; i++) {
-		if (!ensureKlapSession()) {
-			LOG.warn "sendKlapRequest: KLAP session unavailable on attempt ${i + 1}"
-			return null
-		}
-		
-		Map session = getKlapSession()
-		
-		// Create request payload (as JSON string)
-		Map payload = [
-			method: method,
-			requestTimeMils: now(),
-			terminalUUID: session.terminalUuid ?: getTerminalUuid(),
-			params: params
-		]
-		
-		// Encrypt payload
-		String payloadJson = JsonOutput.toJson(payload)
-		def encryptedResult = klapEncrypt(payloadJson.getBytes("UTF-8"))
-		byte[] encryptedData = encryptedResult[0]
-		int requestSeq = encryptedResult[1]
-		
-		try {
-			String cookieValue = session.cookie
-			if (cookieValue && cookieValue.contains(":")) {
-				cookieValue = cookieValue.split(":", 2)[1].trim()
-			}
-			
-			String requestUrl = "http://${getDeviceAddr()}/app/request?seq=${requestSeq}"
-			def syncResult = [waiting: true, completed: false]
-			
-			Map headers = [:]
-			if (cookieValue) {
-				headers.Cookie = cookieValue
-			}
-			headers['Content-Type'] = 'application/octet-stream'
-			
-			Map httpParams = [
-				uri: requestUrl,
-				requestContentType: 'application/octet-stream',
-				contentType: 'application/octet-stream',
-				timeout: 5,
-				body: encryptedData,
-				headers: headers
-			]
-			
-			asynchttpPost('klapRequestCallback', httpParams, [result: syncResult, seq: requestSeq])
-			
-			int waitCount = 0
-			while (syncResult.waiting && waitCount < 50) {
-				pauseExecution(100)
-				waitCount++
-			}
-			
-			if (syncResult.waiting) {
-				LOG.warn "sendKlapRequest: timeout waiting for response on attempt ${i + 1}"
-				return null
-			}
-			
-			// Check for 403 Forbidden and retry if it's the first attempt
-			if (syncResult.status == 403 && i == 0) {
-				LOG.info "sendKlapRequest: received 403 Forbidden, session may be invalid. Clearing session and retrying."
-				state.remove("klapSession")
-				continue // Retry the loop
-			}
-			
-			if (!syncResult.completed) {
-				LOG.warn "sendKlapRequest: request failed with status ${syncResult.status} on attempt ${i + 1}"
-				return null
-			}
-			
-			byte[] encryptedResponse = decodeIfBase64(syncResult.data)
-			if (!encryptedResponse) {
-				LOG.warn "sendKlapRequest: empty response body on attempt ${i + 1}"
-				return null
-			}
-			
-			byte[] decryptedBytes = klapDecrypt(encryptedResponse, requestSeq)
-			if (!decryptedBytes) {
-				LOG.warn "sendKlapRequest: failed to decrypt response on attempt ${i + 1}"
-				return null
-			}
-			
-			String resultJson = new String(decryptedBytes, "UTF-8")
-			JsonSlurper slurper = new JsonSlurper()
-			Map parsed = slurper.parseText(resultJson)
-			return parsed // Success
-			
-		} catch (Exception e) {
-			LOG.warn "sendKlapRequest: exception during request on attempt ${i + 1} [error: ${e.message}]"
-			return null
-		}
-	}
-	
-	LOG.warn "sendKlapRequest: command failed after retry."
-	return null // If we exit the loop
+private byte[] klapBytes(Object value) {
+    // Hubitat AsyncResponse returns octet-stream bodies as Base64 strings.
+    klapCheck(value instanceof String && value.length() <= 131072, "Invalid binary response")
+    byte[] decoded = value.decodeBase64()
+    klapCheck(decoded.encodeBase64().toString() == value, "Invalid Base64 response")
+    return decoded
 }
-
-// ---------------------------------------------------------------------------
-// Async HTTP callbacks for KLAP binary exchanges
-// ---------------------------------------------------------------------------
-
-private byte[] decodeIfBase64(byte[] bytes) {
-	if (!bytes) return bytes
-	if (bytes.length % 4 != 0) {
-		return bytes
-	}
-	boolean ascii = true
-	for (int i = 0; i < bytes.length; i++) {
-		int c = bytes[i] & 0xFF
-		if ((c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) ||
-			c == 0x2B || c == 0x2F || c == 0x3D || c == 0x0A || c == 0x0D) {
-			continue
-		}
-		ascii = false
-		break
-	}
-	if (!ascii) {
-		return bytes
-	}
-	try {
-		String asciiStr = new String(bytes, "UTF-8").replace("\n", "").replace("\r", "")
-		byte[] decoded = asciiStr.decodeBase64()
-		if (decoded && decoded.length > 0) {
-			LOG.debug "decodeIfBase64: decoded base64 payload length=${decoded.length}"
-			return decoded
-		}
-	} catch (Exception ignored) { }
-	return bytes
+private void sendKlapRequest(String method, Map params) {
+    if (state.klapAuthBlocked || now() < ((state.klapRetryAfter ?: 0) as Long)) {
+        if (method != "get_device_info") LOG.warn "KLAP command rejected during authentication block/cooldown"
+        return
+    }
+    List queue = state.klapQueue ?: []
+    if (method == "get_device_info" && (queue.any { it.method == method } || state.klapActive?.command?.method == method)) return
+    if (queue.size() >= 16) { LOG.warn "KLAP queue full; command rejected"; return }
+    queue << [method: method, params: params]
+    state.klapQueue = queue
+    drainKlapQueue()
 }
-
-private byte[] responseBytes(resp) {
-	def data
-	try {
-		data = resp?.data
-	} catch (Exception ignored) { }
-	if (data instanceof byte[]) {
-		return data
-	}
-	if (data instanceof String) {
-		return data.getBytes("ISO-8859-1")
-	}
-	try {
-		data = resp?.rawBody
-	} catch (Exception ignored) { }
-	if (data instanceof byte[]) {
-		return data
-	}
-	if (data instanceof String) {
-		return data.getBytes("ISO-8859-1")
-	}
-	try {
-		data = resp?.body
-	} catch (Exception ignored) { }
-	if (data instanceof byte[]) {
-		return data
-	}
-	if (data instanceof String) {
-		return data.getBytes("ISO-8859-1")
-	}
-	return null
+def drainKlapQueue() {
+    if (state.klapActive || !state.klapQueue) return
+    try {
+        String host = validateKlapHost(getDeviceAddr())
+        List queue = state.klapQueue
+        Map command = queue.remove(0)
+        state.klapQueue = queue
+        long serial = ((state.klapSerial ?: 0) as Long) + 1L
+        state.klapSerial = serial
+        state.klapActive = [id: serial, host: host, command: command]
+        Map session = getKlapSession()
+        if (session.format == 2 && session.host == host && session.aesKey instanceof String &&
+            session.aesIvBase instanceof String && session.signature instanceof String &&
+            session.cookie && session.expires && (session.expires as Long) > now() &&
+            session.seq != null && (session.seq as Long) < Integer.MAX_VALUE) {
+            sendKlapEncrypted(command)
+        } else {
+            state.klapSession = null
+            Map credentials = getKlapCredentials()
+            klapCheck(credentials != null, "Set the TP-Link username and password")
+            byte[] seed = new byte[16]
+            new SecureRandom().nextBytes(seed)
+            state.klapHandshake = [localSeed: seed.encodeBase64().toString()]
+            issueKlap("handshake1", seed)
+        }
+    } catch (Exception e) { klapFailSafe(e) }
 }
-
-def klapHandshake1Callback(resp, data) {
-	try {
-		Map result = data.result
-		result.waiting = false
-		result.status = resp.status ?: 0
-		result.headers = resp.headers ?: [:]
-		result.data = responseBytes(resp)
-		result.completed = (result.status == 200 && result.data != null)
-		if (result.status == 200 && result.data == null) {
-			LOG.warn "klapHandshake1Callback: no response data available (status=${result.status})"
-		}
-	} catch (Exception e) {
-		LOG.warn "klapHandshake1Callback: error processing response: ${e.message}"
-		if (data?.result) {
-			data.result.waiting = false
-			data.result.completed = false
-			data.result.status = 0
-			data.result.headers = [:]
-			data.result.data = null
-		}
-	}
+private void issueKlap(String stage, byte[] body) {
+    Map active = state.klapActive
+    active.stage = stage
+    state.klapActive = active
+    Map token = [id: active.id, stage: stage]
+    String path = stage in ["handshake1", "handshake2"] ? stage : "request?seq=" + active.seq
+    String cookie = stage == "handshake2" ? state.klapHandshake?.cookie : state.klapSession?.cookie
+    Map headers = cookie ? [Cookie: cookie] : [:]
+    runIn(15, "klapRequestTimedOut", [data: token])
+    LOG.debug "KLAP stage: " + stage
+    asynchttpPost("klapResponse", [uri: "http://" + active.host + "/app/" + path,
+        timeout: 5, requestContentType: "application/octet-stream", contentType: "application/octet-stream",
+        headers: headers, body: body], token)
 }
-
-def klapHandshake2Callback(resp, data) {
-	try {
-		Map result = data.result
-		result.waiting = false
-		result.status = resp.status ?: 0
-		result.completed = (result.status == 200)
-	} catch (Exception e) {
-		LOG.warn "klapHandshake2Callback: error processing response: ${e.message}"
-		if (data?.result) {
-			data.result.waiting = false
-			data.result.completed = false
-			data.result.status = 0
-		}
-	}
+private boolean currentKlapRequest(Map token) {
+    return state.klapActive && token && state.klapActive.id == token.id && state.klapActive.stage == token.stage
 }
-
-def klapRequestCallback(resp, data) {
-	try {
-		Map result = data.result
-		result.waiting = false
-		result.status = resp.status ?: 0
-		result.headers = resp.headers ?: [:]
-		result.data = responseBytes(resp)
-		result.completed = (result.status == 200 && result.data != null)
-		if (result.status == 200 && result.data == null) {
-			LOG.warn "klapRequestCallback: no response data available"
-		}
-	} catch (Exception e) {
-		LOG.warn "klapRequestCallback: error processing response: ${e.message}"
-		if (data?.result) {
-			data.result.waiting = false
-			data.result.completed = false
-			data.result.status = 0
-			data.result.data = null
-		}
-	}
+def klapRequestTimedOut(Map token) {
+    if (currentKlapRequest(token)) klapFail("Request timed out; queued commands discarded")
+}
+def klapResponse(resp, Map token) {
+    if (!currentKlapRequest(token)) return
+    unschedule("klapRequestTimedOut")
+    try {
+        int status = resp.getStatus()
+        // A refused handshake needs investigation, not an endless authentication loop.
+        if (status == 403 && token.stage in ["handshake1", "handshake2"]) state.klapAuthBlocked = true
+        klapCheck(!resp.hasError() && status == 200, "HTTP " + status + " during " + token.stage)
+        if (token.stage == "handshake1") {
+            byte[] data = klapBytes(resp.getData())
+            klapCheck(data.length == 48, "Invalid handshake response length")
+            byte[] remoteSeed = new byte[16], serverHash = new byte[32]
+            for (int i = 0; i < 16; i++) remoteSeed[i] = data[i]
+            for (int i = 0; i < 32; i++) serverHash[i] = data[i + 16]
+            Map handshake = state.klapHandshake
+            byte[] localSeed = handshake.localSeed.decodeBase64()
+            Map credentials = getKlapCredentials()
+            klapCheck(credentials != null, "Set the TP-Link username and password")
+            List match = klapFindMatchingAuthHash(localSeed, remoteSeed, serverHash, credentials.username, credentials.password)
+            if (!match) state.klapAuthBlocked = true
+            klapCheck(match != null, "Authentication challenge mismatch; check compatibility/credentials, then Reset Session")
+            String cookie = extractKlapCookie(resp.getHeaders())
+            klapCheck(cookie && !cookie.contains("\r") && !cookie.contains("\n"), "Missing or invalid session cookie")
+            klapDeriveSessionKeys(localSeed, remoteSeed, match[0])
+            handshake.cookie = cookie
+            state.klapHandshake = handshake
+            issueKlap("handshake2", klapHandshake2Hash(localSeed, remoteSeed, match[0], match[1]))
+        } else if (token.stage == "handshake2") {
+            Map session = getKlapSession()
+            session.cookie = state.klapHandshake.cookie
+            session.host = state.klapActive.host
+            session.expires = now() + 600000L
+            session.terminalUuid = getTerminalUuid()
+            state.klapSession = session
+            state.klapHandshake = null
+            sendKlapEncrypted(state.klapActive.command)
+        } else {
+            byte[] plain = klapDecrypt(klapBytes(resp.getData()), state.klapActive.seq as Integer)
+            klapCheck(plain != null, "Invalid encrypted response")
+            Map reply = new JsonSlurper().parseText(new String(plain, "UTF-8")) as Map
+            klapCheck(reply.error_code instanceof Number && reply.error_code == 0,
+                "Device command error " + (reply.error_code instanceof Number ? reply.error_code : "(missing)"))
+            if (token.stage == "request" && state.klapActive.command.method == "set_device_info") {
+                sendKlapEncrypted([method: "get_device_info", params: [:]], "verify")
+            } else {
+                klapCheck(reply.result instanceof Map, "Device info missing")
+                updateSwitchState(reply.result)
+                if (state.klapActive.command.method == "set_device_info") {
+                    klapCheck(state.klapActive.command.params.every { k, v -> reply.result[k] == v },
+                        "Command acknowledged but read-back did not match")
+                }
+                setCommsError(false)
+                sendEvent(name: "lastError", value: "none")
+                state.klapActive = null
+                runInMillis(50, "drainKlapQueue")
+            }
+        }
+    } catch (Exception e) { klapFailSafe(e) }
+}
+private void sendKlapEncrypted(Map command, String stage = "request") {
+    Map session = getKlapSession()
+    Map payload = command + [requestTimeMils: now(), terminalUUID: session.terminalUuid]
+    List encrypted = klapEncrypt(JsonOutput.toJson(payload).getBytes("UTF-8"))
+    Map active = state.klapActive
+    active.seq = encrypted[1]
+    state.klapActive = active
+    issueKlap(stage, encrypted[0])
+}
+private void klapFailSafe(Exception e) {
+    // Exception messages can contain HTTP cookies/URLs. Log only our safe errors.
+    String reason = e instanceof IllegalArgumentException && e.message?.startsWith("KLAP: ") ?
+        e.message.substring(6) : e.class.simpleName + " during " + (state.klapActive?.stage ?: "setup")
+    klapFail(reason)
+}
+private void klapFail(String reason) {
+    state.klapActive = null
+    state.klapQueue = []
+    state.klapHandshake = null
+    state.klapSession = null
+    state.klapRetryAfter = now() + 300000L
+    unschedule("klapRequestTimedOut")
+    setCommsError(true)
+    sendEvent(name: "lastError", value: reason)
+    LOG.warn "KLAP: " + reason + (state.klapAuthBlocked ? "; use Reset Session after investigation" : "; no command replay")
 }
 
 @Field private final Map LOG = [
@@ -1062,4 +721,3 @@ def klapRequestCallback(resp, data) {
             }
         }
 ].asImmutable()
-
