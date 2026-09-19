@@ -9,13 +9,28 @@ loader.parseClass('package hubitat.device; enum Protocol { LAN }; class HubActio
 def driver = new GroovyShell(loader).parse(new File('tuya-lan-driver.groovy'))
 Map state=[:], events=[:], data=[host:'192.0.2.1',port:'6668',gwId:'fixture',localKey:'0123456789abcdef'], jobs=[:]
 Map settings=[host:'192.0.2.2',port:'6668',gwId:'fixture',localKey:'0123456789abcdef',pollRefresh:60,logEnable:true,txtEnable:true]
-List sent=[], logs=[]
+List sent=[], logs=[], socketOps=[]
+Map socketAddress=[:]
 long clock=1000000L
 boolean throwSend=false
+boolean throwConnect=false
 driver.binding=new Binding([state:state,settings:settings,now:{->clock},metadata:{Closure c->},
     getDataValue:{String k->data[k]},updateDataValue:{String k,String v->data[k]=v},removeDataValue:{String k->data.remove(k)},
     sendEvent:{Map e->events[e.name]=e.value},
-    sendHubCommand:{a->if(throwSend) throw new IllegalStateException('secret: '+settings.localKey); sent<<a},
+    sendHubCommand:{a->assert false:'Production must use binary rawSocket, not HubAction'},
+    interfaces:[rawSocket:[
+        connect:{Map options,String host,int port->
+            socketOps<<'connect'
+            if(throwConnect)throw new IllegalStateException('secret: '+settings.localKey)
+            assert options.byteInterface==true && options.readDelay==150
+            socketAddress.destinationAddress=host+':'+port
+        },
+        sendMessage:{String message->
+            socketOps<<'send'
+            if(throwSend)throw new IllegalStateException('secret: '+settings.localKey)
+            sent<<[message:message,options:new LinkedHashMap(socketAddress)]
+        },
+        close:{->socketOps<<'close'}]],
     runIn:{int delay,String name,Map opts=[:]->jobs[name]=[delay:delay,data:opts.data]},
     runInMillis:{int delay,String name->jobs[name]=[delay:delay]},
     unschedule:{String name=null->if(name)jobs.remove(name);else jobs.clear()},
@@ -29,7 +44,7 @@ int count=0
 def test={String title,Closure body->body();count++;println 'PASS '+title}
 def rejects={Closure c->boolean rejected=false;try{c()}catch(IllegalArgumentException e){rejected=true};assert rejected}
 def serialized={->Map s=new JsonSlurper().parseText(JsonOutput.toJson(state));state.clear();state.putAll(s)}
-def fresh={->state.clear();events.clear();sent.clear();jobs.clear();logs.clear();throwSend=false;driver.updated()}
+def fresh={->state.clear();events.clear();sent.clear();jobs.clear();logs.clear();socketOps.clear();throwSend=false;throwConnect=false;driver.updated()}
 def response={long seq,int cmd,Map dps=null,int rc=0,boolean version=false->
     List bytes=[0,0,0,rc]
     if(dps!=null){if(version)bytes+=([51,46,51]+([0]*12));bytes+=driver.encrypt(v.key.bytes,JsonOutput.toJson([dps:dps])).toList()}
@@ -48,7 +63,7 @@ test('Independent Python AES, outbound frames, CRC, return code and version head
 test('Installation is self-contained, persists address first and schedules polling') {
     driver.installed()
     assert sent.size()==1 && sent[0].options.destinationAddress=='192.0.2.2:6668' && jobs.poll.delay==60
-    assert data.driverVersion=='1.1.0' && !data.containsKey('localKey') && !events.containsKey('localKey')
+    assert data.driverVersion=='1.1.1' && !data.containsKey('localKey') && !events.containsKey('localKey')
 }
 test('Successful read publishes confirmed state and clears errors') {
     finishRead(); assert events.switch=='off' && events.level==62 && events.commsError=='false' && events.lastError=='none'
@@ -154,5 +169,33 @@ test('Secrets never enter logs/events, even on crypto and transport errors') {
     String source=new File('tuya-lan-driver.groovy').text
     assert !source.contains('attribute "localKey"') && !source.contains('LOG.exception')
     assert !source.contains('System.arraycopy') && !source.contains('instanceof byte[]') && !source.contains('as byte[]')
+}
+test('Binary TCP opens once per transaction and closes after confirmed read') {
+    fresh();assert state.tuyaSocketOpen && socketOps.count('connect')==1
+    finishRead();assert !state.tuyaSocketOpen && socketOps.last()=='close'
+    driver.on();int connects=socketOps.count('connect')
+    serialized();driver.parse(response(state.tuyaPending.seq,7))
+    assert state.tuyaSocketOpen && socketOps.count('connect')==connects
+    driver.parse(response(state.tuyaPending.seq,10,['1':true,'2':620]))
+    assert !state.tuyaSocketOpen && events.commsError=='false'
+}
+test('Connection failures close the socket without sending or replaying') {
+    fresh();finishRead();int before=sent.size();throwConnect=true;driver.on()
+    assert sent.size()==before && state.tuyaPending==null && !state.tuyaSocketOpen
+    assert events.commsError=='true' && !logs.any{it.contains(v.key)}
+}
+test('Uncorrelated socket callbacks cannot abort a newer transaction') {
+    fresh();Map pending=new LinkedHashMap(state.tuyaPending)
+    driver.socketStatus('receive error: secret '+v.key)
+    assert state.tuyaPending==pending && !logs.any{it.contains(v.key)}
+    driver.tuyaTimedOut(jobs.tuyaTimedOut.data)
+    assert !state.tuyaSocketOpen && events.commsError=='true'
+}
+test('Initialize and uninstall close sockets and remove temporary diagnostics') {
+    fresh();state.tuyaDiagnosticPacket='encrypted fixture';state.tuyaDiagnostic=[:];state.tuyaDiagnosticTransport='raw'
+    driver.initialize()
+    assert !state.containsKey('tuyaDiagnosticPacket') && !state.containsKey('tuyaDiagnosticTransport')
+    assert state.tuyaSocketOpen
+    driver.uninstalled();assert !state.tuyaSocketOpen && jobs.isEmpty()
 }
 println 'Offline tests passed: '+count

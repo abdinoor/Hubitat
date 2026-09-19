@@ -4,7 +4,6 @@ import groovy.transform.Field
 import hubitat.helper.HexUtils
 import javax.crypto.Cipher
 import javax.crypto.spec.SecretKeySpec
-import org.codehaus.groovy.runtime.EncodingGroovyMethods
 
 metadata {
     definition(name: 'Tuya LAN Device', namespace: 'tuya', author: 'Dan Abdinoor',
@@ -73,13 +72,15 @@ metadata {
 @Field static final int SUFFIX              = 0x0000AA55
 
 
-@Field static final String VERSION = "1.1.0"
+@Field static final String VERSION = "1.1.1"
 @Field static final int MAX_FRAME_BYTES = 65536
 
 def installed() { initialize() }
 def updated() { initialize() }
 def initialize() {
     unschedule()
+    closeTuyaSocket()
+    ["tuyaDiagnostic", "tuyaDiagnosticPacket", "tuyaDiagnosticTransport"].each { state.remove(it) }
     state.tuyaPending = null
     state.tuyaQueue = []
     state.tuyaRx = ""
@@ -132,6 +133,7 @@ def setLevel(level, ramp = null, onTime = null) {
     } catch (Exception e) { failTuyaSafe(e) }
 }
 def refresh() { queueTuya(DP_QUERY, [:]) }
+def uninstalled() { unschedule(); closeTuyaSocket() }
 def poll() {
     refresh()
     runIn(getRefreshSeconds(), "poll")
@@ -154,6 +156,9 @@ def drainTuyaQueue() {
         state.tuyaSerial = serial
         state.tuyaPending = [id: serial, command: request.command, wanted: request.dps]
         state.tuyaRx = ""
+        // A socket belongs to one transaction (control plus its read-back).
+        // Never trust a persisted open flag after a restart or driver reload.
+        closeTuyaSocket()
         issueTuya(request.command as Integer, request.dps)
     } catch (Exception e) { failTuyaSafe(e) }
 }
@@ -186,6 +191,7 @@ private void failTuyaSafe(Exception e) {
     failTuya(reason)
 }
 private void failTuya(String reason) {
+    closeTuyaSocket()
     state.tuyaPending = null
     state.tuyaQueue = []
     state.tuyaRx = ""
@@ -226,6 +232,7 @@ def parse(message) {
                     "Command acknowledged but read-back did not match")
                 unschedule("tuyaTimedOut")
                 state.tuyaPending = null
+                closeTuyaSocket()
                 sendEvent(name: "commsError", value: "false")
                 sendEvent(name: "lastError", value: "none")
                 runInMillis(50, "drainTuyaQueue")
@@ -328,14 +335,25 @@ def updateStatus(Map response) {
 }
 def sendLanCmd(int seq, int command, String payload) {
     byte[] message = encodeMessage(seq, command, payload, keyBytes())
-    def action = new hubitat.device.HubAction(HexUtils.byteArrayToHexString(message),
-        hubitat.device.Protocol.LAN, [destinationAddress: getAddress(),
-        type: hubitat.device.HubAction.Type.LAN_TYPE_RAW,
-        encoding: hubitat.device.HubAction.Encoding.HEX_STRING,
-        timeout: 10, parseWarning: true, ignoreResponse: false])
+    getAddress() // Validate before opening a socket.
+    if (!state.tuyaSocketOpen) {
+        interfaces.rawSocket.connect(getDataValue("host"), getDataValue("port").toInteger(),
+            byteInterface: true, readDelay: 150)
+        state.tuyaSocketOpen = true
+    }
     // Let the caller report failure; never pretend a failed send succeeded.
-    sendHubCommand(action)
+    interfaces.rawSocket.sendMessage(HexUtils.byteArrayToHexString(message))
     LOG.debug "Tuya request sent (command " + command + ", sequence " + seq + ")"
+}
+private void closeTuyaSocket() {
+    state.tuyaSocketOpen = false
+    try { interfaces.rawSocket.close() } catch (Exception ignored) { }
+}
+def socketStatus(String message) {
+    // Status callbacks have no transaction ID and may arrive after our own close.
+    // Do not let a late close/error abort a newer request or initiate a replay.
+    // Send exceptions and the transaction watchdog report communication failures.
+    LOG.debug "Tuya socket status received"
 }
 def getAddress() {
     String host = getDataValue("host")
